@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import re
+import shutil  # Added to enable directory removal
 
 
 def get_video_dimensions(filename):
@@ -53,38 +54,96 @@ def calculate_output_dimensions(cropped_width, cropped_height, desired_ar):
     return output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale
 
 
+def natural_sort_key(s):
+    """
+    Generates a key for natural sorting.
+    Splits the string into a list of integers and lowercase strings.
+    """
+    return [int(text) if text.isdigit() else text.lower()
+            for text in re.split(r'(\d+)', s)]  # Raw string to fix SyntaxWarning
+
+
+def delete_empty_media_dirs(media_dir, input_dir, media_extensions):
+    media_dir = os.path.abspath(media_dir)
+    input_dir = os.path.abspath(input_dir)
+    while media_dir != input_dir:
+        # Check if media_dir has any media files
+        has_media_files = False
+        for item in os.listdir(media_dir):
+            item_path = os.path.join(media_dir, item)
+            if os.path.isfile(item_path) and os.path.splitext(item)[1].lower() in media_extensions:
+                has_media_files = True
+                break
+        if has_media_files:
+            # There are media files left, stop
+            break
+        else:
+            # No media files, delete directory regardless of other files
+            shutil.rmtree(media_dir)
+            print(f"Deleted directory {media_dir}")
+            # Move up one level
+            media_dir = os.path.dirname(media_dir)
+            media_dir = os.path.abspath(media_dir)
+    return
+
+
 def main():
     input_dir = 'input'
+    output_dir = 'output'
     media_extensions = ['.mkv', '.mp4', '.avi', '.webm']
-    media_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir)
-                   if os.path.isfile(os.path.join(input_dir, f)) and os.path.splitext(f)[1].lower() in media_extensions]
+
+    # Collect all media files recursively
+    media_files = []
+    for root, dirs, files in os.walk(input_dir):
+        for file in files:
+            if os.path.splitext(file)[1].lower() in media_extensions:
+                full_path = os.path.join(root, file)
+                media_files.append(full_path)
+
     if not media_files:
         print("No media files found in the input directory.")
         sys.exit(1)
 
-    crop_values = input("\nEnter crop values (left, right, top, bottom), e.g., '0,0,104,104': ")
-    try:
-        left, right, top, bottom = map(int, crop_values.split(','))
-    except ValueError:
-        print("Invalid crop values.")
-        sys.exit(1)
+    # Sort media_files using natural sort
+    media_files_sorted = sorted(media_files, key=lambda x: natural_sort_key(os.path.relpath(x, input_dir)))
 
-    aspect_ratio = input("\nEnter output aspect ratio, e.g., '16:9': ")
-    try:
-        ar_width, ar_height = map(int, aspect_ratio.split(':'))
-    except ValueError:
-        print("Invalid aspect ratio.")
-        sys.exit(1)
+    # **Optional Cropping**
+    print()
+    done = False
+    while not done:
+        perform_cropping = input("Do you want to crop the video stream? (yes/no): ").strip().lower()
+        if perform_cropping in ['yes', 'y']:
+            done = True
+            crop_values = input("Enter crop values (left, right, top, bottom), e.g., '0,0,104,104': ")
+            try:
+                left, right, top, bottom = map(int, crop_values.split(','))
+                cropping = True
+            except ValueError:
+                print("Invalid crop values. Exiting.")
+                sys.exit(1)
+        elif perform_cropping in ['no', 'n']:
+            done = True
+            cropping = False
+            left = right = top = bottom = 0  # Defaults, won't affect cropping if not used
 
-    codec_input = input("\nEnter codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ").lower()
-    print("""
-Recommended values (1080p):
-H.264 AVC Standard (no tune)   -  CRF 20
-H.264 AVC Grain                -  CRF 22
-H.265 HEVC Standard (no tune)  -  CRF 20
-H.265 HEVC Grain               -  CRF 22
-""")
-    quality = input("Enter quality setting (CRF): ")
+    # **Optional Aspect Ratio Resizing**
+    done = False
+    while not done:
+        perform_resize = input("Do you want to resize the video stream to a specific aspect ratio? (yes/no): ").strip().lower()
+        if perform_resize in ['yes', 'y']:
+            done = True
+            aspect_ratio = input("Enter output aspect ratio, e.g., '16:9': ")
+            try:
+                ar_width, ar_height = map(int, aspect_ratio.split(':'))
+                desired_ar = ar_width / ar_height
+                resizing = True
+            except ValueError:
+                print("Invalid aspect ratio. Exiting.")
+                sys.exit(1)
+        elif perform_resize in ['no', 'n']:
+            done = True
+            resizing = False
+            desired_ar = None  # Indicates no resizing
 
     # Map user-friendly codec names to ffmpeg encoder names
     codec_map = {
@@ -110,7 +169,7 @@ H.265 HEVC Grain               -  CRF 22
             'pix_fmt': None,
         },
         'libx265': {
-            'options': [],
+            'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4'],
             'pix_fmt': 'yuv420p10le',
         },
         'libvpx-vp9': {
@@ -123,6 +182,7 @@ H.265 HEVC Grain               -  CRF 22
         },
     }
 
+    codec_input = input("Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ").lower()
     if codec_input not in codec_map:
         print("Unsupported codec detected. Please use one of the following codecs:")
         for key in codec_map.keys():
@@ -132,7 +192,14 @@ H.265 HEVC Grain               -  CRF 22
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
-    desired_ar = ar_width / ar_height
+    print("""
+Recommended values (1080p):
+H.264 AVC Standard (no tune)   -  CRF 20
+H.264 AVC Grain                -  CRF 22
+H.265 HEVC Standard (no tune)  -  CRF 20
+H.265 HEVC Grain               -  CRF 22
+""")
+    quality = input("Enter quality setting (CRF): ")
 
     # Show available tune options based on selected codec
     if available_tune_options:
@@ -152,7 +219,7 @@ H.265 HEVC Grain               -  CRF 22
     # Validate CPU usage percentage and calculate number of threads
     try:
         cpu_usage_percentage = float(cpu_usage_percentage)
-        if not 0 < cpu_usage_percentage <= 100:
+        if not 0 < cpu_usage_percentage <= 1000:
             raise ValueError
     except ValueError:
         print("Invalid CPU usage percentage.")
@@ -166,7 +233,7 @@ H.265 HEVC Grain               -  CRF 22
     number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // 4.5))
     print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
 
-    output_dir = 'output'
+    # Ensure output directory exists
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -177,53 +244,83 @@ H.265 HEVC Grain               -  CRF 22
 
     # Determine codec display name for filename replacements
     codec_display_name_map = {
-        'libx264': 'AVC',
-        'libx265': 'HEVC',
+        'libx264': 'x264',
+        'libx265': 'x265',
         'libvpx-vp9': 'VP9',
         'libaom-av1': 'AV1'
     }
     codec_display_name = codec_display_name_map.get(codec, codec_input.upper())
 
-    for media_file in media_files:
-        print(f"Processing file: {media_file}")
+    for media_file in media_files_sorted:
+        print(f"\nProcessing file: {media_file}")
         # Get original dimensions
         orig_width, orig_height = get_video_dimensions(media_file)
         if orig_width is None or orig_height is None:
             continue  # skip this file
-        # Compute cropped dimensions
-        cropped_width = orig_width - left - right
-        cropped_height = orig_height - top - bottom
-        if cropped_width <= 0 or cropped_height <= 0:
-            print(f"Cropped dimensions are invalid for file {media_file}. Skipping.")
-            continue
-        # Compute output dimensions and padding
-        output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
-        # Construct filter chain
+
+        # **Compute Cropped Dimensions (if cropping is enabled)**
+        if cropping:
+            cropped_width = orig_width - left - right
+            cropped_height = orig_height - top - bottom
+            if cropped_width <= 0 or cropped_height <= 0:
+                print(f"Cropped dimensions are invalid for file {media_file}. Skipping.")
+                continue
+        else:
+            cropped_width = orig_width
+            cropped_height = orig_height
+
+        # **Compute Output Dimensions and Padding (if resizing is enabled)**
+        if resizing:
+            output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
+        else:
+            # If no resizing, output dimensions are the same as cropped dimensions
+            output_width = cropped_width
+            output_height = cropped_height
+            pad_left = pad_right = pad_top = pad_bottom = 0
+            scale = False
+
+        # **Construct Filter Chain Based on User Choices**
         filter_chain = []
-        # Crop filter
-        crop_filter = f"crop=w=iw-{left}-{right}:h=ih-{top}-{bottom}:x={left}:y={top}"
-        filter_chain.append(crop_filter)
-        # Scale filter (if needed)
-        if scale:
-            scale_filter = f"scale=w={output_width}:h={output_height}"
-            filter_chain.append(scale_filter)
-        # Pad filter
-        if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-            pad_filter = f"pad=w={output_width}:h={output_height}:x={pad_left}:y={pad_top}:color=black"
-            filter_chain.append(pad_filter)
+        if cropping:
+            # Crop filter
+            crop_filter = f"crop=w=iw-{left}-{right}:h=ih-{top}-{bottom}:x={left}:y={top}"
+            filter_chain.append(crop_filter)
+        if resizing:
+            if scale:
+                # Scale filter
+                scale_filter = f"scale=w={output_width}:h={output_height}"
+                filter_chain.append(scale_filter)
+            # Pad filter
+            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                pad_filter = f"pad=w={output_width}:h={output_height}:x={pad_left}:y={pad_top}:color=black"
+                filter_chain.append(pad_filter)
         # Build filter string
-        filter_str = ",".join(filter_chain)
-        # Build ffmpeg command to re-encode video only
-        temp_video_file = os.path.join(output_dir, 'temp_' + os.path.basename(media_file))
+        filter_str = ",".join(filter_chain) if filter_chain else None
+
+        # **Build FFmpeg Command to Re-encode Video Only**
+        # Determine relative path
+        rel_path = os.path.relpath(media_file, input_dir)
+        rel_dir = os.path.dirname(rel_path)
+        # Create corresponding directory in output_dir
+        output_subdir = os.path.join(output_dir, rel_dir)
+        if not os.path.exists(output_subdir):
+            os.makedirs(output_subdir)
+
+        temp_video_file = os.path.join(output_subdir, 'temp_' + os.path.basename(media_file))
         cmd_ffmpeg = [
-            'ffmpeg', '-y', '-i', media_file,
-            '-vf', filter_str,
+            'ffmpeg', '-y', '-i', media_file
+        ]
+
+        if filter_str:
+            cmd_ffmpeg.extend(['-vf', filter_str])
+
+        cmd_ffmpeg.extend([
             '-map', '0:v',  # Map only video
             '-c:v', codec,
             '-preset', 'slow',
             '-crf', quality,
             '-threads', str(number_of_threads),  # Limit CPU usage
-        ]
+        ])
 
         # Add pix_fmt if specified for the codec
         if encoder_options[codec]['pix_fmt']:
@@ -238,14 +335,15 @@ H.265 HEVC Grain               -  CRF 22
 
         cmd_ffmpeg.append(temp_video_file)
 
-        # Start video encoding
+        # **Start Video Encoding**
         print(f"Encoding video {media_file}...\n")
-        process = subprocess.Popen(cmd_ffmpeg)
-        process.wait()
-        if process.returncode != 0:
-            print(f"Error encoding video {media_file}")
+        try:
+            subprocess.run(cmd_ffmpeg, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error encoding video {media_file}:\n{e.stderr}")
             continue
-        # Build output filename
+
+        # **Build Output Filename**
         basename = os.path.splitext(os.path.basename(media_file))[0]
         # Replace substrings with codec_display_name
         for substring in replace_substrings:
@@ -255,27 +353,34 @@ H.265 HEVC Grain               -  CRF 22
         for substring in remove_substrings:
             pattern = re.compile(re.escape(substring), re.IGNORECASE)
             basename = pattern.sub('', basename)
-        output_file = os.path.join(output_dir, basename + '.mkv')
+        output_file = os.path.join(output_subdir, basename + '.mkv')
 
-        # Build mkvmerge command to merge re-encoded video with original audio and subtitles
+        # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio and Subtitles**
         cmd_mkvmerge = [
             'mkvmerge',
             '-o', output_file,
             temp_video_file,
             '--no-video', media_file
         ]
-        # Start merging process
+        # **Start Merging Process**
         print(f"Merging video with audio and subtitles for {media_file}...")
-        process = subprocess.Popen(cmd_mkvmerge)
-        process.wait()
-        if process.returncode != 0:
-            print(f"Error merging files for {media_file}")
+        try:
+            subprocess.run(cmd_mkvmerge, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error merging files for {media_file}:\n{e.stderr}")
             continue
-        # Delete temporary video file
+
+        # **Delete Temporary Video File**
         os.remove(temp_video_file)
-        # Optionally delete original media file
+
         print(f"Finished processing {media_file}. Deleting original file.")
         os.remove(media_file)
+
+        # **Delete Empty Media Directories**
+        media_dir = os.path.dirname(media_file)
+        delete_empty_media_dirs(media_dir, input_dir, media_extensions)
+
+    print("\nProcessing complete.")
 
 
 if __name__ == "__main__":

@@ -12,11 +12,9 @@ A custom media encoder script based on Python. Uses ffmpeg and mkvmerge to encod
 ````text
 W:\home\philip\media-toolbox\media-encoder>python3 media-encoder.py
 
-Enter crop values (left, right, top, bottom), e.g., '0,0,104,104': 0,0,0,0
-
-Enter output aspect ratio, e.g., '16:9': 16:9
-
-Enter codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
+Do you want to crop the video stream? (yes/no): no
+Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
+Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
 
 Recommended values (1080p):
 H.264 AVC Standard (no tune)   -  CRF 20
@@ -29,9 +27,10 @@ Enter quality setting (CRF): 22
 Available tune options for h265: grain, fastdecode, zerolatency, psnr, ssim
 Enter tune setting (optional): grain
 
-Enter the maximum CPU usage percentage (e.g., '50' for 50%): 80
+Enter the maximum CPU usage percentage (e.g., '50' for 50%): 85
 
-Using 2 encoder thread(s) based on CPU usage percentage.
+Using 3 encoder thread(s) based on CPU usage percentage.
+
 Processing file: input\media.mkv
 Encoding video input\media.mkv...
 ...
