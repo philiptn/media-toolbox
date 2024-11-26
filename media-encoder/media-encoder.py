@@ -157,7 +157,7 @@ def main():
     # Map codec to available tune options
     codec_tune_options = {
         'libx264': ['film', 'animation', 'grain', 'stillimage', 'fastdecode', 'zerolatency', 'psnr', 'ssim'],
-        'libx265': ['grain', 'fastdecode', 'zerolatency', 'psnr', 'ssim'],
+        'libx265': ['grain', 'fastdecode', 'zerolatency', 'psnr', 'ssim', 'animation'],
         'libvpx-vp9': [],
         'libaom-av1': ['ssim', 'psnr']
     }
@@ -170,7 +170,7 @@ def main():
         },
         'libx265': {
             'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4'],
-            'pix_fmt': 'yuv420p10le',
+            'pix_fmt': None,
         },
         'libvpx-vp9': {
             'options': [],
@@ -194,10 +194,11 @@ def main():
 
     print("""
 Recommended values (1080p):
-H.264 AVC Standard (no tune)   -  CRF 20
-H.264 AVC Grain                -  CRF 22
-H.265 HEVC Standard (no tune)  -  CRF 20
-H.265 HEVC Grain               -  CRF 22
+H.264 AVC Standard (no tune)                -  CRF 20
+H.264 AVC Grain                             -  CRF 22
+H.265 HEVC Standard (no tune)               -  CRF 20
+H.265 HEVC Animation (minimizes artifacts)  -  CRF 20
+H.265 HEVC Grain                            -  CRF 22
 """)
     quality = input("Enter quality setting (CRF): ")
 
