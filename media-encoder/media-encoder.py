@@ -231,7 +231,11 @@ H.265 HEVC Grain                            -  CRF 22
         print("Unable to determine the number of CPU cores.")
         sys.exit(1)
 
-    number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // 4.5))
+    if codec.lower() == "libx265":
+        divisor = 4.5
+    else:
+        divisor = 1
+    number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
     print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
 
     # Ensure output directory exists
