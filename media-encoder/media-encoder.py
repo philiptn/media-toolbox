@@ -13,7 +13,9 @@ def get_video_dimensions(filename):
         print(f"Error getting video dimensions for {filename}: {result.stderr}")
         return None, None
     try:
-        width, height = map(int, result.stdout.strip().split('x'))
+        # Strip any trailing 'x' and whitespace
+        output = result.stdout.strip().rstrip('x')
+        width, height = map(int, output.split('x'))
         return width, height
     except ValueError:
         print(f"Error parsing video dimensions for {filename}: {result.stdout}")
@@ -114,7 +116,7 @@ def main():
         perform_cropping = input("Do you want to crop the video stream? (yes/no): ").strip().lower()
         if perform_cropping in ['yes', 'y']:
             done = True
-            crop_values = input("Enter crop values (left, right, top, bottom), e.g., '0,0,104,104': ")
+            crop_values = input("\nEnter crop values (left, right, top, bottom), e.g., '0,0,104,104': ")
             try:
                 left, right, top, bottom = map(int, crop_values.split(','))
                 cropping = True
@@ -129,10 +131,10 @@ def main():
     # **Optional Aspect Ratio Resizing**
     done = False
     while not done:
-        perform_resize = input("Do you want to resize the video stream to a specific aspect ratio? (yes/no): ").strip().lower()
+        perform_resize = input("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ").strip().lower()
         if perform_resize in ['yes', 'y']:
             done = True
-            aspect_ratio = input("Enter output aspect ratio, e.g., '16:9': ")
+            aspect_ratio = input("\nEnter output aspect ratio, e.g., '16:9': ")
             try:
                 ar_width, ar_height = map(int, aspect_ratio.split(':'))
                 desired_ar = ar_width / ar_height
@@ -165,11 +167,20 @@ def main():
     # Define encoder-specific options
     encoder_options = {
         'libx264': {
+            # -bf 4: Use up to 4 consecutive B-frames, increasing compression efficiency by referencing more frames.
+            # -rc-lookahead 32: Pre-scan 32 upcoming frames to allocate bits more effectively, improving scene transitions.
+            # -aq-mode 3: Employ advanced adaptive quantization, giving more bits to complex areas for clearer detail.
+            # -b-pyramid normal: Allow B-frames to serve as references for other frames, boosting overall compression.
+            # -coder 1: Enable CABAC entropy coding, improving compression without sacrificing quality.
             'options': ['-bf', '4', '-rc-lookahead', '32', '-aq-mode', '3', '-b-pyramid', 'normal', '-coder', '1'],
             'pix_fmt': None,
         },
         'libx265': {
-            'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4'],
+            # rc-lookahead=32: Analyze the next 32 frames to smoothly manage bitrate and maintain consistent quality.
+            # aq-mode=3: Deploy a more complex AQ scheme that redistributes bitrate for sharper detail in challenging areas.
+            # bframes=4: Insert up to 4 consecutive B-frames, enabling higher compression ratios with minimal quality loss.
+            # no-sao=1: Disable Sample Adaptive Offset to prevent excessive smoothing and retain crisp edges.
+            'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4:no-sao=1'],
             'pix_fmt': None,
         },
         'libvpx-vp9': {
@@ -182,7 +193,7 @@ def main():
         },
     }
 
-    codec_input = input("Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ").lower()
+    codec_input = input("\nEnter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ").lower()
     if codec_input not in codec_map:
         print("Unsupported codec detected. Please use one of the following codecs:")
         for key in codec_map.keys():
@@ -192,13 +203,39 @@ def main():
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
+    if codec == "libx265":
+        enable_denoising = input("\nDo you want to enable denoising? (yes/no): ").strip().lower()
+        if enable_denoising in ['yes', 'y']:
+            encoder_options[codec]['options'].extend(['-vf', 'hqdn3d=4:4:3:3'])
+            # Set denoising parameters based on the level
+            if codec == 'libx265':
+                nr_intra = 1000
+                nr_inter = 1500
+                # Append 'nr-intra' and 'nr-inter' to the '-x265-params' string
+                for i, opt in enumerate(encoder_options[codec]['options']):
+                    if opt == '-x265-params':
+                        encoder_options[codec]['options'][i+1] += f':nr-intra={nr_intra}:nr-inter={nr_inter}'
+                        break
+
+    # Add 'psy-rd' options to the encoder options, if supported
+    if codec in ['libx264', 'libx265']:
+        if codec == 'libx264':
+            # Add '-psy-rd', '3.0:0.0' to options
+            encoder_options[codec]['options'].extend(['-psy-rd', '3.0:0.0'])
+        elif codec == 'libx265':
+            # Append 'psy-rd=3:psy-rdoq=3' to the '-x265-params' string
+            for i, opt in enumerate(encoder_options[codec]['options']):
+                if opt == '-x265-params':
+                    encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
+                    break
+
     print("""
 Recommended values (1080p):
-H.264 AVC Standard (no tune)                -  CRF 20
+H.264 AVC Standard                          -  CRF 20
 H.264 AVC Grain                             -  CRF 22
-H.265 HEVC Standard (no tune)               -  CRF 20
-H.265 HEVC Animation (minimizes artifacts)  -  CRF 20
-H.265 HEVC Grain                            -  CRF 22
+H.265 HEVC Standard                         -  CRF 20
+H.265 HEVC Grain (Recommended)              -  CRF 24
+H.265 HEVC Denoised                         -  CRF 22
 """)
     quality = input("Enter quality setting (CRF): ")
 
@@ -234,7 +271,7 @@ H.265 HEVC Grain                            -  CRF 22
     if codec.lower() == "libx265":
         divisor = 4.5
     else:
-        divisor = 1
+        divisor = 0.8
     number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
     print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
 
@@ -245,7 +282,7 @@ H.265 HEVC Grain                            -  CRF 22
     # Substrings to replace with codec_display_name
     replace_substrings = ['HEVC', 'AVC', 'H.265', 'H.264', 'h264', 'h265', 'x264', 'x265']
     # Substrings to remove
-    remove_substrings = ['REMUX']
+    remove_substrings = ['.REMUX', 'REMUX']
 
     # Determine codec display name for filename replacements
     codec_display_name_map = {
@@ -342,6 +379,7 @@ H.265 HEVC Grain                            -  CRF 22
 
         # **Start Video Encoding**
         print(f"Encoding video {media_file}...\n")
+        print(f'"""\n{" ".join(cmd_ffmpeg)}\n"""\n')
         try:
             subprocess.run(cmd_ffmpeg, check=True)
         except subprocess.CalledProcessError as e:
@@ -384,8 +422,6 @@ H.265 HEVC Grain                            -  CRF 22
         # **Delete Empty Media Directories**
         media_dir = os.path.dirname(media_file)
         delete_empty_media_dirs(media_dir, input_dir, media_extensions)
-
-    print("\nProcessing complete.")
 
 
 if __name__ == "__main__":

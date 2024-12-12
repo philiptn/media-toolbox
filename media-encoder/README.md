@@ -1,6 +1,5 @@
 # media-encoder
-A custom media encoder script based on Python. Uses ffmpeg and mkvmerge to encode and repack the media. Includes some custom encoding parameters, as well as suggested CRF settings for each scenario. Will also ask the user for cropping and aspect ratio.
-
+A custom media encoder script based on Python. Uses ffmpeg and mkvmerge to encode and repack the media. Includes optimized encoding parameters, as well as suggested CRF settings for each codec/tuning. Also supports cropping, resizing and denoising (h265).
 #### How to use:
 1. Navigate to the media-encoder folder: `cd media-encoder`
 2. Put media files inside `input/`.
@@ -13,22 +12,26 @@ A custom media encoder script based on Python. Uses ffmpeg and mkvmerge to encod
 W:\home\philip\media-toolbox\media-encoder>python3 media-encoder.py
 
 Do you want to crop the video stream? (yes/no): no
+
 Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
+
 Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
+
+Do you want to enable denoising? (yes/no): yes
 
 Recommended values (1080p):
 H.264 AVC Standard (no tune)                -  CRF 20
 H.264 AVC Grain                             -  CRF 22
 H.265 HEVC Standard (no tune)               -  CRF 20
-H.265 HEVC Animation (minimizes artifacts)  -  CRF 20
-H.265 HEVC Grain                            -  CRF 22
+H.265 HEVC Grain                            -  CRF 24
+H.265 HEVC Denoised                         -  CRF 22
 
 Enter quality setting (CRF): 22
 
 Available tune options for h265: grain, fastdecode, zerolatency, psnr, ssim, animation
-Enter tune setting (optional): grain
+Enter tune setting (optional):
 
-Enter the maximum CPU usage percentage (e.g., '50' for 50%): 85
+Enter the maximum CPU usage percentage (e.g., '50' for 50%): 90
 
 Using 3 encoder thread(s) based on CPU usage percentage.
 
