@@ -3,6 +3,7 @@ import subprocess
 import sys
 import re
 import shutil  # Added to enable directory removal
+from prompt_toolkit import prompt
 
 
 def get_video_dimensions(filename):
@@ -113,10 +114,10 @@ def main():
     print()
     done = False
     while not done:
-        perform_cropping = input("Do you want to crop the video stream? (yes/no): ").strip().lower()
+        perform_cropping = prompt("Do you want to crop the video stream? (yes/no): ", default="no")
         if perform_cropping in ['yes', 'y']:
             done = True
-            crop_values = input("\nEnter crop values (left, right, top, bottom), e.g., '0,0,104,104': ")
+            crop_values = prompt("\nEnter crop values (left, right, top, bottom): ", default="0,0,104,104")
             try:
                 left, right, top, bottom = map(int, crop_values.split(','))
                 cropping = True
@@ -131,10 +132,10 @@ def main():
     # **Optional Aspect Ratio Resizing**
     done = False
     while not done:
-        perform_resize = input("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ").strip().lower()
+        perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ", default="no")
         if perform_resize in ['yes', 'y']:
             done = True
-            aspect_ratio = input("\nEnter output aspect ratio, e.g., '16:9': ")
+            aspect_ratio = prompt("\nEnter output aspect ratio: ", default="16:9")
             try:
                 ar_width, ar_height = map(int, aspect_ratio.split(':'))
                 desired_ar = ar_width / ar_height
@@ -193,7 +194,7 @@ def main():
         },
     }
 
-    codec_input = input("\nEnter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ").lower()
+    codec_input = prompt("\nEnter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): ", default="h265")
     if codec_input not in codec_map:
         print("Unsupported codec detected. Please use one of the following codecs:")
         for key in codec_map.keys():
@@ -204,7 +205,7 @@ def main():
     available_tune_options = codec_tune_options.get(codec, [])
 
     if codec == "libx265":
-        enable_denoising = input("\nDo you want to enable denoising? (yes/no): ").strip().lower()
+        enable_denoising = prompt("\nDo you want to enable denoising? (yes/no): ", default="no")
         if enable_denoising in ['yes', 'y']:
             encoder_options[codec]['options'].extend(['-vf', 'hqdn3d=4:4:3:3'])
             # Set denoising parameters based on the level
@@ -237,12 +238,12 @@ H.265 HEVC Standard                         -  CRF 20
 H.265 HEVC Grain (Recommended)              -  CRF 24
 H.265 HEVC Denoised                         -  CRF 22
 """)
-    quality = input("Enter quality setting (CRF): ")
+    quality = prompt("Enter quality setting (CRF): ", default="24")
 
     # Show available tune options based on selected codec
     if available_tune_options:
         print(f"\nAvailable tune options for {codec_input}: {', '.join(available_tune_options)}")
-        tune_option = input("Enter tune setting (optional): ").lower()
+        tune_option = prompt("Enter tune setting (optional): ", default="grain")
         if tune_option and tune_option not in available_tune_options:
             print(f"Invalid tune option for codec {codec_input}. Available options are: {', '.join(available_tune_options)}")
             sys.exit(1)
@@ -252,7 +253,7 @@ H.265 HEVC Denoised                         -  CRF 22
     print()
 
     # Ask for CPU usage percentage (this question is asked last)
-    cpu_usage_percentage = input("Enter the maximum CPU usage percentage (e.g., '50' for 50%): ")
+    cpu_usage_percentage = prompt("Enter the maximum CPU usage percentage (e.g., '50' for 50%): ", default="85")
 
     # Validate CPU usage percentage and calculate number of threads
     try:
