@@ -274,6 +274,9 @@ H.265 HEVC Denoised                         -  CRF 22
     else:
         divisor = 0.8
     number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
+    # Limit to 16 threads based on x264 documentation
+    if codec.lower() == "libx265":
+        number_of_threads = min(16, number_of_threads)
     print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
 
     # Ensure output directory exists
