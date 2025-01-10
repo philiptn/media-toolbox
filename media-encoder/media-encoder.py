@@ -4,6 +4,8 @@ import sys
 import re
 import shutil  # Added to enable directory removal
 from prompt_toolkit import prompt
+from better_ffmpeg_progress import FfmpegProcess
+from rich.console import Console
 
 
 def get_video_dimensions(filename):
@@ -252,41 +254,77 @@ H.265 HEVC Denoised                         -  CRF 22
         print(f"No tune options available for codec {codec_input}.")
     print()
 
+    encoder_speed = None
+    if codec in ['libx264', 'libx265']:
+        valid_speeds = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
+                        "placebo"]
+        print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        encoder_speed = prompt(
+            f"Enter encoder speed: ",
+            default="slow"
+        )
+        if encoder_speed not in valid_speeds:
+            print("Invalid speed/preset choice. Exiting.")
+            sys.exit(1)
+    elif codec == 'libvpx-vp9':
+        valid_speeds = [f"'{str(i)}'" for i in range(9)]  # 0 through 8
+        print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        encoder_speed = prompt(
+            f"Enter encoder speed: ",
+            default="4"
+        )
+        if encoder_speed not in valid_speeds:
+            print("Invalid speed (cpu-used) choice. Exiting.")
+            sys.exit(1)
+    elif codec == 'libaom-av1':
+        valid_speeds = [f"'{str(i)}'" for i in range(9)]  # 0 through 8
+        print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        encoder_speed = prompt(
+            f"Encoder speed: ",
+            default="4"
+        )
+        if encoder_speed not in valid_speeds:
+            print("Invalid speed (cpu-used) choice. Exiting.")
+            sys.exit(1)
+
     # Ask for CPU usage percentage (this question is asked last)
-    cpu_usage_percentage = prompt("Enter the maximum CPU usage percentage (e.g., '50' for 50%): ", default="85")
+    cpu_usage_percentage = prompt("\nEnter the maximum CPU usage percentage (e.g., '50' for 50%): ", default="auto")
 
     # Validate CPU usage percentage and calculate number of threads
-    try:
-        cpu_usage_percentage = float(cpu_usage_percentage)
-        if not 0 < cpu_usage_percentage <= 1000:
-            raise ValueError
-    except ValueError:
-        print("Invalid CPU usage percentage.")
-        sys.exit(1)
-
-    num_cores = os.cpu_count()
-    if not num_cores:
-        print("Unable to determine the number of CPU cores.")
-        sys.exit(1)
-
-    if codec.lower() == "libx265":
-        divisor = 4.5
+    if cpu_usage_percentage == "auto":
+        number_of_threads = 0
     else:
-        divisor = 0.8
-    number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
-    # Limit to 16 threads based on x264 documentation
-    if codec.lower() == "libx265":
-        number_of_threads = min(16, number_of_threads)
-    print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
+        try:
+            cpu_usage_percentage = float(cpu_usage_percentage)
+            if not 0 < cpu_usage_percentage <= 1000:
+                raise ValueError
+        except ValueError:
+            print("Invalid CPU usage percentage.")
+            sys.exit(1)
+
+        num_cores = os.cpu_count()
+        if not num_cores:
+            print("Unable to determine the number of CPU cores.")
+            sys.exit(1)
+
+        if codec.lower() == "libx265":
+            divisor = 4.5
+        else:
+            divisor = 0.8
+        number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
+        # Limit to 16 threads based on x264 documentation
+        if codec.lower() == "libx264":
+            number_of_threads = min(16, number_of_threads)
+        print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
 
     # Ensure output directory exists
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     # Substrings to replace with codec_display_name
-    replace_substrings = ['HEVC', 'AVC', 'H.265', 'H.264', 'h264', 'h265', 'x264', 'x265']
+    replace_substrings = ['HEVC', 'AVC', 'H.265', 'H.264', 'h264', 'h265', 'x264', 'x265', 'VC-1']
     # Substrings to remove
-    remove_substrings = ['.REMUX', 'REMUX']
+    remove_substrings = ['.REMUX', ' REMUX', 'REMUX']
 
     # Determine codec display name for filename replacements
     codec_display_name_map = {
@@ -298,7 +336,6 @@ H.265 HEVC Denoised                         -  CRF 22
     codec_display_name = codec_display_name_map.get(codec, codec_input.upper())
 
     for media_file in media_files_sorted:
-        print(f"\nProcessing file: {media_file}")
         # Get original dimensions
         orig_width, orig_height = get_video_dimensions(media_file)
         if orig_width is None or orig_height is None:
@@ -363,10 +400,20 @@ H.265 HEVC Denoised                         -  CRF 22
         cmd_ffmpeg.extend([
             '-map', '0:v',  # Map only video
             '-c:v', codec,
-            '-preset', 'slow',
             '-crf', quality,
             '-threads', str(number_of_threads),  # Limit CPU usage
         ])
+
+        # Apply the encoder speed/preset depending on the codec
+        if codec in ['libx264', 'libx265']:
+            # Use '-preset'
+            cmd_ffmpeg.extend(['-preset', encoder_speed])
+        elif codec == 'libvpx-vp9':
+            # For VP9, use '-cpu-used'
+            cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
+        elif codec == 'libaom-av1':
+            # For AV1, also use '-cpu-used'
+            cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
 
         # Add pix_fmt if specified for the codec
         if encoder_options[codec]['pix_fmt']:
@@ -382,13 +429,10 @@ H.265 HEVC Denoised                         -  CRF 22
         cmd_ffmpeg.append(temp_video_file)
 
         # **Start Video Encoding**
-        print(f"Encoding video {media_file}...\n")
-        print(f'"""\n{" ".join(cmd_ffmpeg)}\n"""\n')
-        try:
-            subprocess.run(cmd_ffmpeg, check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error encoding video {media_file}:\n{e.stderr}")
-            continue
+        console = Console()
+        console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+        process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file='/dev/null')
+        return_code = process.run()
 
         # **Build Output Filename**
         basename = os.path.splitext(os.path.basename(media_file))[0]
@@ -410,17 +454,13 @@ H.265 HEVC Denoised                         -  CRF 22
             '--no-video', media_file
         ]
         # **Start Merging Process**
-        print(f"Merging video with audio and subtitles for {media_file}...")
         try:
-            subprocess.run(cmd_mkvmerge, check=True)
+            subprocess.run(cmd_mkvmerge, check=True, text=True, capture_output=True)
         except subprocess.CalledProcessError as e:
             print(f"Error merging files for {media_file}:\n{e.stderr}")
             continue
 
-        # **Delete Temporary Video File**
         os.remove(temp_video_file)
-
-        print(f"Finished processing {media_file}. Deleting original file.")
         os.remove(media_file)
 
         # **Delete Empty Media Directories**
