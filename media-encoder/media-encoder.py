@@ -3,13 +3,28 @@ import subprocess
 import sys
 import re
 import shutil  # Added to enable directory removal
+import platform
 from prompt_toolkit import prompt
 from better_ffmpeg_progress import FfmpegProcess
 from rich.console import Console
 
 
+if platform.system() == "Windows":
+    # Update PATH to point to FFmpeg in bin folder if running Windows.
+    # Needed for better-ffmpeg-progress to work properly.
+    ffmpeg_dir = os.path.abspath(r'bin\ffmpeg')
+    os.environ["PATH"] = os.pathsep.join([ffmpeg_dir, os.environ.get("PATH", "")])
+    ffmpeg = r'bin\ffmpeg\ffmpeg.exe'
+    ffprobe = r'bin\ffmpeg\ffprobe.exe'
+    mkvmerge = r'bin\mkvtoolnix\mkvmerge.exe'
+else:
+    ffmpeg = 'ffmpeg'
+    ffprobe = 'ffprobe'
+    mkvmerge = 'mkvmerge'
+
+
 def get_video_dimensions(filename):
-    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+    cmd = [ffprobe, '-v', 'error', '-select_streams', 'v:0',
            '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', filename]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -85,7 +100,6 @@ def delete_empty_media_dirs(media_dir, input_dir, media_extensions):
         else:
             # No media files, delete directory regardless of other files
             shutil.rmtree(media_dir)
-            print(f"Deleted directory {media_dir}")
             # Move up one level
             media_dir = os.path.dirname(media_dir)
             media_dir = os.path.abspath(media_dir)
@@ -113,7 +127,6 @@ def main():
     media_files_sorted = sorted(media_files, key=lambda x: natural_sort_key(os.path.relpath(x, input_dir)))
 
     # **Optional Cropping**
-    print()
     done = False
     while not done:
         perform_cropping = prompt("Do you want to crop the video stream? (yes/no): ", default="no")
@@ -232,15 +245,7 @@ def main():
                     encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
                     break
 
-    print("""
-Recommended values (1080p):
-H.264 AVC Standard                          -  CRF 20
-H.264 AVC Grain                             -  CRF 22
-H.265 HEVC Standard                         -  CRF 20
-H.265 HEVC Grain (Recommended)              -  CRF 24
-H.265 HEVC Denoised                         -  CRF 22
-""")
-    quality = prompt("Enter quality setting (CRF): ", default="24")
+    quality = prompt("\nEnter quality setting (CRF): ", default="20")
 
     # Show available tune options based on selected codec
     if available_tune_options:
@@ -256,12 +261,11 @@ H.265 HEVC Denoised                         -  CRF 22
 
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
-        valid_speeds = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
-                        "placebo"]
+        valid_speeds = ["medium", "slow"]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
         encoder_speed = prompt(
             f"Enter encoder speed: ",
-            default="slow"
+            default="medium"
         )
         if encoder_speed not in valid_speeds:
             print("Invalid speed/preset choice. Exiting.")
@@ -316,6 +320,8 @@ H.265 HEVC Denoised                         -  CRF 22
         if codec.lower() == "libx264":
             number_of_threads = min(16, number_of_threads)
         print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
+
+    ffmpeg_ui = prompt("\nSelect preferred FFmpeg UI (compact, advanced): ", default="compact")
 
     # Ensure output directory exists
     if not os.path.exists(output_dir):
@@ -391,7 +397,7 @@ H.265 HEVC Denoised                         -  CRF 22
 
         temp_video_file = os.path.join(output_subdir, 'temp_' + os.path.basename(media_file))
         cmd_ffmpeg = [
-            'ffmpeg', '-y', '-i', media_file
+            ffmpeg, '-y', '-i', media_file
         ]
 
         if filter_str:
@@ -428,11 +434,21 @@ H.265 HEVC Denoised                         -  CRF 22
 
         cmd_ffmpeg.append(temp_video_file)
 
-        # **Start Video Encoding**
-        console = Console()
-        console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
-        process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file='/dev/null')
-        return_code = process.run()
+        if ffmpeg_ui.lower() == "compact":
+            # **Start Video Encoding**
+            null_device = "/dev/null" if os.name != "nt" else "NUL"
+            console = Console()
+            console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+            process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file=null_device)
+            return_code = process.run()
+        else:
+            console = Console()
+            console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+            try:
+                subprocess.run(cmd_ffmpeg, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Error encoding video '{media_file}':\n{e.stderr}")
+                continue
 
         # **Build Output Filename**
         basename = os.path.splitext(os.path.basename(media_file))[0]
@@ -448,7 +464,7 @@ H.265 HEVC Denoised                         -  CRF 22
 
         # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio and Subtitles**
         cmd_mkvmerge = [
-            'mkvmerge',
+            mkvmerge,
             '-o', output_file,
             temp_video_file,
             '--no-video', media_file

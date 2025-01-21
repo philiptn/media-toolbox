@@ -151,3 +151,4 @@ tmp/
 media-encoder/input/*
 media-encoder/output/*
 media-encoder/.backup
+bin
