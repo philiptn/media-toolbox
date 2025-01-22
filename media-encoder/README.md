@@ -1,5 +1,5 @@
 # media-encoder
-Uses ffmpeg and mkvmerge to encode and repack the media. Includes optimized encoding parameters, as well as suggested CRF settings for each codec/tuning. Also supports cropping, resizing and denoising (h265).
+Uses ffmpeg and mkvmerge to encode and repack the media. Includes optimized encoding parameters, as well as suggested CRF settings for each codec/tuning. Also supports cropping and resizing.
 #### How to use:
 Note: If you are using Windows Command Prompt, replace all `python3` and `pip3` commands with `python` and `pip`. 
 1. Navigate to the media-encoder folder: `cd media-encoder`
@@ -18,8 +18,6 @@ Do you want to crop the video stream? (yes/no): no
 Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
 
 Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
-
-Do you want to enable denoising? (yes/no): no
 
 Enter quality setting (CRF): 20
 

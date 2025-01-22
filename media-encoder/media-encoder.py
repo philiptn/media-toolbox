@@ -219,20 +219,6 @@ def main():
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
-    if codec == "libx265":
-        enable_denoising = prompt("\nDo you want to enable denoising? (yes/no): ", default="no")
-        if enable_denoising in ['yes', 'y']:
-            encoder_options[codec]['options'].extend(['-vf', 'hqdn3d=4:4:3:3'])
-            # Set denoising parameters based on the level
-            if codec == 'libx265':
-                nr_intra = 1000
-                nr_inter = 1500
-                # Append 'nr-intra' and 'nr-inter' to the '-x265-params' string
-                for i, opt in enumerate(encoder_options[codec]['options']):
-                    if opt == '-x265-params':
-                        encoder_options[codec]['options'][i+1] += f':nr-intra={nr_intra}:nr-inter={nr_inter}'
-                        break
-
     # Add 'psy-rd' options to the encoder options, if supported
     if codec in ['libx264', 'libx265']:
         if codec == 'libx264':
