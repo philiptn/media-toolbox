@@ -12,11 +12,11 @@ from rich.console import Console
 if platform.system() == "Windows":
     # Update PATH to point to FFmpeg in bin folder if running Windows.
     # Needed for better-ffmpeg-progress to work properly.
-    ffmpeg_dir = os.path.abspath(r'bin\ffmpeg')
+    ffmpeg_dir = os.path.abspath(r'.bin\ffmpeg')
     os.environ["PATH"] = os.pathsep.join([ffmpeg_dir, os.environ.get("PATH", "")])
-    ffmpeg = r'bin\ffmpeg\ffmpeg.exe'
-    ffprobe = r'bin\ffmpeg\ffprobe.exe'
-    mkvmerge = r'bin\mkvtoolnix\mkvmerge.exe'
+    ffmpeg = r'.bin\ffmpeg\ffmpeg.exe'
+    ffprobe = r'.bin\ffmpeg\ffprobe.exe'
+    mkvmerge = r'.bin\mkvtoolnix\mkvmerge.exe'
 else:
     ffmpeg = 'ffmpeg'
     ffprobe = 'ffprobe'
@@ -129,7 +129,7 @@ def main():
     # **Optional Cropping**
     done = False
     while not done:
-        perform_cropping = prompt("Do you want to crop the video stream? (yes/no): ", default="no")
+        perform_cropping = prompt("\nDo you want to crop the video stream? (yes/no): ", default="no")
         if perform_cropping in ['yes', 'y']:
             done = True
             crop_values = prompt("\nEnter crop values (left, right, top, bottom): ", default="0,0,104,104")
@@ -263,8 +263,10 @@ def main():
     if codec in ['libx264', 'libx265']:
         valid_speeds = ["medium", "slow"]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        print("'slow'   - Recommended for very grainy video - preserves more details")
+        print("'medium' - Recommended for everything else   - more space efficient")
         encoder_speed = prompt(
-            f"Enter encoder speed: ",
+            f"\nEnter encoder speed: ",
             default="medium"
         )
         if encoder_speed not in valid_speeds:

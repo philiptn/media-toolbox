@@ -146,9 +146,3 @@ tmp/
 
 # Bak files
 *.bak
-
-# media-encoder files
-media-encoder/input/*
-media-encoder/output/*
-media-encoder/.backup
-bin

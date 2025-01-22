@@ -1,0 +1,8 @@
+# Ignore everything in this directory
+*
+# Except
+!.gitignore
+!dvd-to-episodes.bat
+!dvd-to-episodes.py
+!requirements.txt
+!install_prerequisites.sh

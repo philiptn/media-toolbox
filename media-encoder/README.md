@@ -13,8 +13,6 @@ Note: If you are using Windows Command Prompt, replace all `python3` and `pip3` 
 
 #### Example usage:
 ````text
-(venv_win) W:\home\philip\media-toolbox\media-encoder>python media-encoder.py
-
 Do you want to crop the video stream? (yes/no): no
 
 Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
@@ -23,22 +21,20 @@ Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
 
 Do you want to enable denoising? (yes/no): no
 
-Recommended values (1080p):
-H.264 AVC Standard                          -  CRF 20
-H.264 AVC Grain                             -  CRF 22
-H.265 HEVC Standard                         -  CRF 20
-H.265 HEVC Grain (Recommended)              -  CRF 24
-H.265 HEVC Denoised                         -  CRF 22
-
-Enter quality setting (CRF): 24
+Enter quality setting (CRF): 20
 
 Available tune options for h265: grain, fastdecode, zerolatency, psnr, ssim, animation
 Enter tune setting (optional): grain
 
-Available speed options for h265: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow, placebo
-Enter encoder speed: slow
+Available speed options for h265: medium, slow
+'slow'   - Recommended for very grainy video - preserves more details
+'medium' - Recommended for everything else   - more space efficient
+
+Enter encoder speed: medium
 
 Enter the maximum CPU usage percentage (e.g., '50' for 50%): auto
+
+Select preferred FFmpeg UI (compact, advanced): compact
 
 ⠇ Processing TV.Show.S01E01.mkv ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   1% 0:00:14 31:55
 ````

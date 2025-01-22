@@ -1,0 +1,11 @@
+# Ignore everything in this directory
+*
+# Except
+!.gitignore
+!README.md
+!media-encoder.bat
+!media-encoder.py
+!preview-video.bat
+!preview-video.py
+!prerequisites.sh
+!requirements.txt
