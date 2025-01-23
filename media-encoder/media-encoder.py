@@ -4,9 +4,16 @@ import sys
 import re
 import shutil  # Added to enable directory removal
 import platform
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from prompt_toolkit import prompt
 from better_ffmpeg_progress import FfmpegProcess
 from rich.console import Console
+
+
+# Calculate max_workers as 85% of the available logical cores
+max_cpu_usage = 85
+max_workers = int(os.cpu_count() * int(max_cpu_usage) / 100)
 
 
 if platform.system() == "Windows":
@@ -38,6 +45,61 @@ def get_video_dimensions(filename):
     except ValueError:
         print(f"Error parsing video dimensions for {filename}: {result.stdout}")
         return None, None
+
+
+def wait_for_stable_files(path):
+    def is_file_stable(file_path):
+        """Check if a file's size is stable (indicating it is fully copied)."""
+        initial_size = os.path.getsize(file_path)
+        time.sleep(2.5)
+        new_size = os.path.getsize(file_path)
+        return initial_size == new_size
+
+    stable_files = set()
+
+    while True:
+        # Get the current list of files to check
+        files = []
+        for dirpath, dirnames, filenames in os.walk(path):
+            # Modify dirnames in-place to skip directories starting with a dot
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            files.extend(os.path.join(dirpath, f) for f in filenames if not f.startswith('.'))
+
+        def process_file(file_path):
+            if file_path in stable_files:
+                return None  # Skip already stable files
+            if is_file_stable(file_path):
+                return file_path  # Return stable file
+            return None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(process_file, file): file for file in files if file not in stable_files}
+
+            for future in as_completed(future_to_file):
+                result = future.result()
+                if result:
+                    stable_files.add(result)
+
+        # Check again
+        time.sleep(2.5)
+        files = []
+        for dirpath, dirnames, filenames in os.walk(path):
+            # Modify dirnames in-place to skip directories starting with a dot
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            files.extend(os.path.join(dirpath, f) for f in filenames if not f.startswith('.'))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(process_file, file): file for file in files if file not in stable_files}
+
+            for future in as_completed(future_to_file):
+                result = future.result()
+                if result:
+                    stable_files.add(result)
+
+        if len(stable_files) >= len(files):
+            break  # Exit if all files are stable
+
+    return len(stable_files)
 
 
 def calculate_output_dimensions(cropped_width, cropped_height, desired_ar):
@@ -110,21 +172,6 @@ def main():
     input_dir = 'input'
     output_dir = 'output'
     media_extensions = ['.mkv', '.mp4', '.avi', '.webm']
-
-    # Collect all media files recursively
-    media_files = []
-    for root, dirs, files in os.walk(input_dir):
-        for file in files:
-            if os.path.splitext(file)[1].lower() in media_extensions:
-                full_path = os.path.join(root, file)
-                media_files.append(full_path)
-
-    if not media_files:
-        print("No media files found in the input directory.")
-        sys.exit(1)
-
-    # Sort media_files using natural sort
-    media_files_sorted = sorted(media_files, key=lambda x: natural_sort_key(os.path.relpath(x, input_dir)))
 
     # **Optional Cropping**
     done = False
@@ -329,147 +376,166 @@ def main():
     }
     codec_display_name = codec_display_name_map.get(codec, codec_input.upper())
 
-    for media_file in media_files_sorted:
-        # Get original dimensions
-        orig_width, orig_height = get_video_dimensions(media_file)
-        if orig_width is None or orig_height is None:
-            continue  # skip this file
+    remaining_files = wait_for_stable_files(input_dir)
+    while remaining_files:
+        # Collect all media files recursively
+        media_files = []
+        for root, dirs, files in os.walk(input_dir):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in media_extensions:
+                    full_path = os.path.join(root, file)
+                    media_files.append(full_path)
 
-        # **Compute Cropped Dimensions (if cropping is enabled)**
-        if cropping:
-            cropped_width = orig_width - left - right
-            cropped_height = orig_height - top - bottom
-            if cropped_width <= 0 or cropped_height <= 0:
-                print(f"Cropped dimensions are invalid for file {media_file}. Skipping.")
-                continue
-        else:
-            cropped_width = orig_width
-            cropped_height = orig_height
+        if not media_files:
+            print("No media files found in the input directory.")
+            sys.exit(1)
 
-        # **Compute Output Dimensions and Padding (if resizing is enabled)**
-        if resizing:
-            output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
-        else:
-            # If no resizing, output dimensions are the same as cropped dimensions
-            output_width = cropped_width
-            output_height = cropped_height
-            pad_left = pad_right = pad_top = pad_bottom = 0
-            scale = False
+        # Sort media_files using natural sort
+        media_files_sorted = sorted(media_files, key=lambda x: natural_sort_key(os.path.relpath(x, input_dir)))
 
-        # **Construct Filter Chain Based on User Choices**
-        filter_chain = []
-        if cropping:
-            # Crop filter
-            crop_filter = f"crop=w=iw-{left}-{right}:h=ih-{top}-{bottom}:x={left}:y={top}"
-            filter_chain.append(crop_filter)
-        if resizing:
-            if scale:
-                # Scale filter
-                scale_filter = f"scale=w={output_width}:h={output_height}"
-                filter_chain.append(scale_filter)
-            # Pad filter
-            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-                pad_filter = f"pad=w={output_width}:h={output_height}:x={pad_left}:y={pad_top}:color=black"
-                filter_chain.append(pad_filter)
-        # Build filter string
-        filter_str = ",".join(filter_chain) if filter_chain else None
+        for media_file in media_files_sorted:
+            # Get original dimensions
+            orig_width, orig_height = get_video_dimensions(media_file)
+            if orig_width is None or orig_height is None:
+                continue  # skip this file
 
-        # **Build FFmpeg Command to Re-encode Video Only**
-        # Determine relative path
-        rel_path = os.path.relpath(media_file, input_dir)
-        rel_dir = os.path.dirname(rel_path)
-        # Create corresponding directory in output_dir
-        output_subdir = os.path.join(output_dir, rel_dir)
-        if not os.path.exists(output_subdir):
-            os.makedirs(output_subdir)
+            # **Compute Cropped Dimensions (if cropping is enabled)**
+            if cropping:
+                cropped_width = orig_width - left - right
+                cropped_height = orig_height - top - bottom
+                if cropped_width <= 0 or cropped_height <= 0:
+                    print(f"Cropped dimensions are invalid for file {media_file}. Skipping.")
+                    continue
+            else:
+                cropped_width = orig_width
+                cropped_height = orig_height
 
-        temp_video_file = os.path.join(output_subdir, 'temp_' + os.path.basename(media_file))
-        cmd_ffmpeg = [
-            ffmpeg, '-y', '-i', media_file
-        ]
+            # **Compute Output Dimensions and Padding (if resizing is enabled)**
+            if resizing:
+                output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
+            else:
+                # If no resizing, output dimensions are the same as cropped dimensions
+                output_width = cropped_width
+                output_height = cropped_height
+                pad_left = pad_right = pad_top = pad_bottom = 0
+                scale = False
 
-        if filter_str:
-            cmd_ffmpeg.extend(['-vf', filter_str])
+            # **Construct Filter Chain Based on User Choices**
+            filter_chain = []
+            if cropping:
+                # Crop filter
+                crop_filter = f"crop=w=iw-{left}-{right}:h=ih-{top}-{bottom}:x={left}:y={top}"
+                filter_chain.append(crop_filter)
+            if resizing:
+                if scale:
+                    # Scale filter
+                    scale_filter = f"scale=w={output_width}:h={output_height}"
+                    filter_chain.append(scale_filter)
+                # Pad filter
+                if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                    pad_filter = f"pad=w={output_width}:h={output_height}:x={pad_left}:y={pad_top}:color=black"
+                    filter_chain.append(pad_filter)
+            # Build filter string
+            filter_str = ",".join(filter_chain) if filter_chain else None
 
-        cmd_ffmpeg.extend([
-            '-map', '0:v',  # Map only video
-            '-c:v', codec,
-            '-crf', quality,
-            '-threads', str(number_of_threads),  # Limit CPU usage
-        ])
+            # **Build FFmpeg Command to Re-encode Video Only**
+            # Determine relative path
+            rel_path = os.path.relpath(media_file, input_dir)
+            rel_dir = os.path.dirname(rel_path)
+            # Create corresponding directory in output_dir
+            output_subdir = os.path.join(output_dir, rel_dir)
+            if not os.path.exists(output_subdir):
+                os.makedirs(output_subdir)
 
-        # Apply the encoder speed/preset depending on the codec
-        if codec in ['libx264', 'libx265']:
-            # Use '-preset'
-            cmd_ffmpeg.extend(['-preset', encoder_speed])
-        elif codec == 'libvpx-vp9':
-            # For VP9, use '-cpu-used'
-            cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
-        elif codec == 'libaom-av1':
-            # For AV1, also use '-cpu-used'
-            cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
+            temp_video_file = os.path.join(output_subdir, 'temp_' + os.path.basename(media_file))
+            cmd_ffmpeg = [
+                ffmpeg, '-y', '-i', media_file
+            ]
 
-        # Add pix_fmt if specified for the codec
-        if encoder_options[codec]['pix_fmt']:
-            cmd_ffmpeg.extend(['-pix_fmt', encoder_options[codec]['pix_fmt']])
+            if filter_str:
+                cmd_ffmpeg.extend(['-vf', filter_str])
 
-        # Add encoder-specific options
-        cmd_ffmpeg.extend(encoder_options[codec]['options'])
+            cmd_ffmpeg.extend([
+                '-map', '0:v',  # Map only video
+                '-c:v', codec,
+                '-crf', quality,
+                '-threads', str(number_of_threads),  # Limit CPU usage
+            ])
 
-        # Add tune option if provided
-        if tune_option:
-            cmd_ffmpeg.extend(['-tune', tune_option])
+            # Apply the encoder speed/preset depending on the codec
+            if codec in ['libx264', 'libx265']:
+                # Use '-preset'
+                cmd_ffmpeg.extend(['-preset', encoder_speed])
+            elif codec == 'libvpx-vp9':
+                # For VP9, use '-cpu-used'
+                cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
+            elif codec == 'libaom-av1':
+                # For AV1, also use '-cpu-used'
+                cmd_ffmpeg.extend(['-cpu-used', encoder_speed])
 
-        cmd_ffmpeg.append(temp_video_file)
+            # Add pix_fmt if specified for the codec
+            if encoder_options[codec]['pix_fmt']:
+                cmd_ffmpeg.extend(['-pix_fmt', encoder_options[codec]['pix_fmt']])
 
-        if ffmpeg_ui.lower() == "compact":
-            # **Start Video Encoding**
-            null_device = "/dev/null" if os.name != "nt" else "NUL"
-            console = Console()
-            console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
-            process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file=null_device)
-            return_code = process.run()
-        else:
-            console = Console()
-            console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+            # Add encoder-specific options
+            cmd_ffmpeg.extend(encoder_options[codec]['options'])
+
+            # Add tune option if provided
+            if tune_option:
+                cmd_ffmpeg.extend(['-tune', tune_option])
+
+            cmd_ffmpeg.append(temp_video_file)
+
+            if ffmpeg_ui.lower() == "compact":
+                # **Start Video Encoding**
+                null_device = "/dev/null" if os.name != "nt" else "NUL"
+                console = Console()
+                console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+                process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file=null_device)
+                return_code = process.run()
+            else:
+                console = Console()
+                console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
+                try:
+                    subprocess.run(cmd_ffmpeg, check=True)
+                except subprocess.CalledProcessError as e:
+                    print(f"Error encoding video '{media_file}':\n{e.stderr}")
+                    continue
+
+            # **Build Output Filename**
+            basename = os.path.splitext(os.path.basename(media_file))[0]
+            # Replace substrings with codec_display_name
+            for substring in replace_substrings:
+                pattern = re.compile(re.escape(substring), re.IGNORECASE)
+                basename = pattern.sub(codec_display_name, basename)
+            # Remove substrings
+            for substring in remove_substrings:
+                pattern = re.compile(re.escape(substring), re.IGNORECASE)
+                basename = pattern.sub('', basename)
+            output_file = os.path.join(output_subdir, basename + '.mkv')
+
+            # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio and Subtitles**
+            cmd_mkvmerge = [
+                mkvmerge,
+                '-o', output_file,
+                temp_video_file,
+                '--no-video', media_file
+            ]
+            # **Start Merging Process**
             try:
-                subprocess.run(cmd_ffmpeg, check=True)
+                subprocess.run(cmd_mkvmerge, check=True, text=True, capture_output=True)
             except subprocess.CalledProcessError as e:
-                print(f"Error encoding video '{media_file}':\n{e.stderr}")
+                print(f"Error merging files for {media_file}:\n{e.stderr}")
                 continue
 
-        # **Build Output Filename**
-        basename = os.path.splitext(os.path.basename(media_file))[0]
-        # Replace substrings with codec_display_name
-        for substring in replace_substrings:
-            pattern = re.compile(re.escape(substring), re.IGNORECASE)
-            basename = pattern.sub(codec_display_name, basename)
-        # Remove substrings
-        for substring in remove_substrings:
-            pattern = re.compile(re.escape(substring), re.IGNORECASE)
-            basename = pattern.sub('', basename)
-        output_file = os.path.join(output_subdir, basename + '.mkv')
+            os.remove(temp_video_file)
+            os.remove(media_file)
 
-        # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio and Subtitles**
-        cmd_mkvmerge = [
-            mkvmerge,
-            '-o', output_file,
-            temp_video_file,
-            '--no-video', media_file
-        ]
-        # **Start Merging Process**
-        try:
-            subprocess.run(cmd_mkvmerge, check=True, text=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error merging files for {media_file}:\n{e.stderr}")
-            continue
+            # **Delete Empty Media Directories**
+            media_dir = os.path.dirname(media_file)
+            delete_empty_media_dirs(media_dir, input_dir, media_extensions)
 
-        os.remove(temp_video_file)
-        os.remove(media_file)
-
-        # **Delete Empty Media Directories**
-        media_dir = os.path.dirname(media_file)
-        delete_empty_media_dirs(media_dir, input_dir, media_extensions)
+            remaining_files = wait_for_stable_files(input_dir)
 
 
 if __name__ == "__main__":
