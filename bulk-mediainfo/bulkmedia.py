@@ -87,10 +87,6 @@ def get_mkv_info(debug, filename, silent):
     while not done:
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
-            if not printed and not silent:
-                print(
-                    f"{GREY}[UTC {get_timestamp()}] [INFO]{RESET} Incoming file(s) detected in input folder. Waiting...")
-                printed = True
             time.sleep(5)
         if result.returncode == 0:
             done = True

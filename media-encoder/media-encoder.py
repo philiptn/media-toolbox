@@ -278,7 +278,10 @@ def main():
                     encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
                     break
 
-    quality = prompt("\nEnter quality setting (CRF): ", default="20")
+    print(f"\nConstant Rate Factor (CRF)")
+    print("CRF 20 - Recommended for most scenarios - preserves the most details")
+    print("CRF 24 - Recommended for space saving   - minimal quality loss")
+    quality = prompt("\nEnter quality setting: ", default="20")
 
     # Show available tune options based on selected codec
     if available_tune_options:
@@ -294,13 +297,14 @@ def main():
 
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
-        valid_speeds = ["medium", "slow"]
+        valid_speeds = ["slow", "medium", "superfast"]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
-        print("'slow'   - Recommended for very grainy video - preserves more details")
-        print("'medium' - Recommended for everything else   - more space efficient")
+        print("'slow'      - Recommended for video that contains grain  - preserves more details")
+        print("'medium'    - Recommended for less grainy video          - more space efficient")
+        print("'superfast' - Recommended for fast encode time           - loses some quality")
         encoder_speed = prompt(
             f"\nEnter encoder speed: ",
-            default="medium"
+            default="slow"
         )
         if encoder_speed not in valid_speeds:
             print("Invalid speed/preset choice. Exiting.")
@@ -456,7 +460,7 @@ def main():
                 cmd_ffmpeg.extend(['-vf', filter_str])
 
             cmd_ffmpeg.extend([
-                '-map', '0:v',  # Map only video
+                '-map', 'v:0',  # Map only video
                 '-c:v', codec,
                 '-crf', quality,
                 '-threads', str(number_of_threads),  # Limit CPU usage
