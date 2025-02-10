@@ -131,11 +131,13 @@ def find_mkv_files(folder, recursive=False):
     mkv_files = []
     if recursive:
         for root, dirs, files in os.walk(folder):
+            dirs.sort()   # sort subdirectories for alphabetical traversal
+            files.sort()  # sort files alphabetically in each directory
             for file in files:
                 if file.lower().endswith('.mkv'):
                     mkv_files.append(os.path.join(root, file))
     else:
-        for file in os.listdir(folder):
+        for file in sorted(os.listdir(folder)):  # sort the files in the folder alphabetically
             if file.lower().endswith('.mkv'):
                 mkv_files.append(os.path.join(folder, file))
     return mkv_files

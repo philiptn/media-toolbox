@@ -61,6 +61,7 @@ def main():
         current_file = idx
 
         media_info = MediaInfo.parse(video_file)
+
         # Initialize metadata variables with default values
         codec = 'Unknown'
         fps = 'Unknown'
@@ -69,23 +70,8 @@ def main():
         resolution = 'Unknown'
         avg_bitrate = 'Unknown'
         max_bitrate = 'Unknown'
-        filesize = 'Unknown'
 
-        # Get file size in bytes
-        filesize_bytes = os.path.getsize(video_file)
-        # Store filesize in bytes for sorting
-        filesize_sort = filesize_bytes
-        # Determine unit and convert file size
-        if filesize_bytes >= 1024 ** 3:
-            # Size is 1 GB or more
-            filesize_value = filesize_bytes / (1024 ** 3)
-            filesize_unit = 'GB'
-        else:
-            # Size is less than 1 GB
-            filesize_value = filesize_bytes / (1024 ** 2)
-            filesize_unit = 'MB'
-        filesize_display = f"{filesize_value:.2f} {filesize_unit}"
-
+        # Process the first video track
         for track in media_info.tracks:
             if track.track_type == 'Video':
                 codec = track.codec_id or 'Unknown'
@@ -126,8 +112,43 @@ def main():
                 else:
                     max_bitrate_mbps = None
                     max_bitrate_display = 'N/A'
+                break  # Only process the first video track
 
-                break  # Process only the first video track
+        # Process audio track(s) to determine the main audio language.
+        # Default is an empty string if nothing is found.
+        audio_lang = ""
+        for track in media_info.tracks:
+            if track.track_type == 'Audio':
+                # If a default audio track is flagged, use its language.
+                if getattr(track, 'default', None) in ['Yes', '1']:
+                    if track.language is not None:
+                        audio_lang = track.language
+                    break
+                # Otherwise, if language info is present, use the first encountered audio track.
+                if track.language:
+                    audio_lang = track.language
+
+        # Process subtitle track(s) to determine the main subtitle language.
+        subtitle_lang = ""
+        for track in media_info.tracks:
+            if track.track_type == 'Text':
+                if getattr(track, 'default', None) in ['Yes', '1']:
+                    if track.language is not None:
+                        subtitle_lang = track.language
+                    break
+                if track.language:
+                    subtitle_lang = track.language
+
+        # Get file size in bytes
+        filesize_bytes = os.path.getsize(video_file)
+        filesize_sort = filesize_bytes  # For sorting purposes
+        if filesize_bytes >= 1024 ** 3:
+            filesize_value = filesize_bytes / (1024 ** 3)
+            filesize_unit = 'GB'
+        else:
+            filesize_value = filesize_bytes / (1024 ** 2)
+            filesize_unit = 'MB'
+        filesize_display = f"{filesize_value:.2f} {filesize_unit}"
 
         # Use only the filename without any folder paths
         filename = os.path.basename(video_file)
@@ -146,37 +167,35 @@ def main():
             'avg_bitrate_display': avg_bitrate_display,
             'max_bitrate': max_bitrate_mbps,
             'max_bitrate_display': max_bitrate_display,
+            'audio_lang': audio_lang,
+            'subtitle_lang': subtitle_lang,
             'filename': filename
         }
 
         video_data_list.append(video_data)
 
-    # Stop spinner
+    # Stop spinner and restore cursor
     spinner_running = False
     spinner_thread.join()
-
-    # Show cursor again
     print('\033[?25h', end='')
 
-    # After processing all files, clear the progress line
+    # Clear the progress line
     print(' ' * 80, end='\r')
 
     # Set default sort key to 'filename' if no sort option is provided
     sort_key = args.sort or 'filename'
-
-    # Determine if sorting should be descending
     if sort_key in ['filesize', 'avg_bitrate', 'max_bitrate']:
         descending = True
     else:
         descending = False
 
-    # Special handling for numeric sorting
+    # Special handling for numeric sorting keys
     if sort_key in ['filesize', 'avg_bitrate', 'max_bitrate', 'fps']:
         video_data_list.sort(key=lambda x: x[sort_key] if x[sort_key] is not None else -1, reverse=descending)
     else:
         video_data_list.sort(key=lambda x: x[sort_key] or '', reverse=descending)
 
-    # Determine the maximum width for each column
+    # Update headers to include Audio and Subtitle columns.
     headers = {
         'filesize_display': 'Filesize',
         'codec': 'Codec',
@@ -186,32 +205,32 @@ def main():
         'resolution': 'Resolution',
         'avg_bitrate_display': 'Avg Bitrate',
         'max_bitrate_display': 'Max Bitrate',
+        'audio_lang': 'Audio',
+        'subtitle_lang': 'Subtitle',
         'filename': 'Filename'
     }
 
-    # Initialize the column widths based on the header lengths
+    # Determine the maximum width for each column based on header and data lengths.
     column_widths = {key: len(value) for key, value in headers.items()}
-
-    # Update column widths based on the maximum data length
     for data in video_data_list:
         for key in column_widths.keys():
             value = str(data.get(key, ''))
             column_widths[key] = max(column_widths[key], len(value))
 
-    # Build the format string dynamically
+    # Build the format string dynamically.
     format_string = ''
     header_string = ''
     for key in headers.keys():
-        width = column_widths[key] + 2  # Add some padding
+        width = column_widths[key] + 2  # Add some padding.
         format_string += f"{{:<{width}}}"
         header_string += f"{headers[key]:<{width}}"
 
-    # Print the header
+    # Print the header and a separator.
     print()
     print(header_string.strip())
     print('-' * len(header_string.strip()))
 
-    # Print the data rows
+    # Print the data rows.
     for data in video_data_list:
         print(format_string.format(
             data['filesize_display'],
@@ -222,6 +241,8 @@ def main():
             data['resolution'],
             data['avg_bitrate_display'],
             data['max_bitrate_display'],
+            data['audio_lang'],
+            data['subtitle_lang'],
             data['filename']
         ).strip())
     print()
