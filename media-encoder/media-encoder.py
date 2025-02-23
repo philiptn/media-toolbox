@@ -47,6 +47,15 @@ def get_video_dimensions(filename):
         return None, None
 
 
+def get_all_files(path):
+    files = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        # Modify dirnames in-place to skip directories starting with a dot
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        files.extend(os.path.join(dirpath, f) for f in filenames if not f.startswith('.'))
+    return files
+
+
 def wait_for_stable_files(path):
     def is_file_stable(file_path):
         """Check if a file's size is stable (indicating it is fully copied)."""
@@ -173,6 +182,10 @@ def main():
     output_dir = 'output'
     media_extensions = ['.mkv', '.mp4', '.avi', '.webm']
 
+    all_files = get_all_files(input_dir)
+    if not all_files:
+        exit(2)
+
     # **Optional Cropping**
     done = False
     while not done:
@@ -242,7 +255,6 @@ def main():
             # rc-lookahead=32: Analyze the next 32 frames to smoothly manage bitrate and maintain consistent quality.
             # aq-mode=3: Deploy a more complex AQ scheme that redistributes bitrate for sharper detail in challenging areas.
             # bframes=4: Insert up to 4 consecutive B-frames, enabling higher compression ratios with minimal quality loss.
-            # no-sao=1: Disable Sample Adaptive Offset to prevent excessive smoothing and retain crisp edges.
             'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4:no-sao=1'],
             'pix_fmt': None,
         },
@@ -266,27 +278,14 @@ def main():
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
-    # Add 'psy-rd' options to the encoder options, if supported
-    if codec in ['libx264', 'libx265']:
-        if codec == 'libx264':
-            # Add '-psy-rd', '3.0:0.0' to options
-            encoder_options[codec]['options'].extend(['-psy-rd', '3.0:0.0'])
-        elif codec == 'libx265':
-            # Append 'psy-rd=3:psy-rdoq=3' to the '-x265-params' string
-            for i, opt in enumerate(encoder_options[codec]['options']):
-                if opt == '-x265-params':
-                    encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
-                    break
-
-    print(f"\nConstant Rate Factor (CRF)")
-    print("CRF 20 - Recommended for most scenarios - preserves the most details")
-    print("CRF 24 - Recommended for space saving   - minimal quality loss")
-    quality = prompt("\nEnter quality setting: ", default="20")
+    quality = prompt("\nEnter quality setting (CRF): ", default="20")
 
     # Show available tune options based on selected codec
     if available_tune_options:
-        print(f"\nAvailable tune options for {codec_input}: {', '.join(available_tune_options)}")
-        tune_option = prompt("Enter tune setting (optional): ", default="grain")
+        default_tune = ''
+        print("\nUse tune 'grain' if you want to preserve all the high level details (at the cost of larger filesize)")
+        print(f"Available tune options for {codec_input}: {', '.join(available_tune_options)}")
+        tune_option = prompt("Enter tune setting (optional): ", default=default_tune)
         if tune_option and tune_option not in available_tune_options:
             print(f"Invalid tune option for codec {codec_input}. Available options are: {', '.join(available_tune_options)}")
             sys.exit(1)
@@ -297,14 +296,17 @@ def main():
 
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
-        valid_speeds = ["slow", "medium", "superfast"]
+        if tune_option == 'grain':
+            speed_default = 'slow'
+        else:
+            speed_default = 'medium'
+        valid_speeds = ["slow", "medium"]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
-        print("'slow'      - Recommended for video that contains grain  - preserves more details")
-        print("'medium'    - Recommended for less grainy video          - more space efficient")
-        print("'superfast' - Recommended for fast encode time           - loses some quality")
+        print("'slow'      - Preserves the most details, but takes a long time to encode")
+        print("'medium'    - Significantly faster but falls off in the smaller details")
         encoder_speed = prompt(
             f"\nEnter encoder speed: ",
-            default="slow"
+            default=speed_default
         )
         if encoder_speed not in valid_speeds:
             print("Invalid speed/preset choice. Exiting.")
@@ -330,7 +332,15 @@ def main():
             print("Invalid speed (cpu-used) choice. Exiting.")
             sys.exit(1)
 
-    # Ask for CPU usage percentage (this question is asked last)
+    if codec in ['libx264', 'libx265']:
+        if codec == 'libx264':
+            encoder_options[codec]['options'].extend(['-psy-rd', '3.0:0.0'])
+        elif codec == 'libx265':
+            for i, opt in enumerate(encoder_options[codec]['options']):
+                if opt == '-x265-params':
+                    encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
+                    break
+
     cpu_usage_percentage = prompt("\nEnter the maximum CPU usage percentage (e.g., '50' for 50%): ", default="auto")
 
     # Validate CPU usage percentage and calculate number of threads

@@ -77,11 +77,18 @@ if not exist %VENV_ACTIVATE% (
     %VENV_PIP% install -r requirements.txt >nul 2>&1
 )
 
-:: Run the Python program
 python media-encoder.py
 
-echo.
-echo Encoding complete.
-echo Press any key to exit...
-pause >nul
-exit
+if %ERRORLEVEL% equ 2 (
+    echo.
+    echo No media files found in input folder.
+    echo Press any key to exit...
+    pause >nul
+    exit
+) else (
+    echo.
+    echo Encoding complete.
+    echo Press any key to exit...
+    pause >nul
+    exit
+)
