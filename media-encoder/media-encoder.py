@@ -278,8 +278,6 @@ def main():
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
-    quality = prompt("\nEnter quality setting (CRF): ", default="20")
-
     # Show available tune options based on selected codec
     if available_tune_options:
         default_tune = ''
@@ -292,7 +290,12 @@ def main():
     else:
         tune_option = ''
         print(f"No tune options available for codec {codec_input}.")
-    print()
+
+    if tune_option == 'grain':
+        quality_default = '20'
+    else:
+        quality_default = '18'
+    quality = prompt("\nEnter quality setting (CRF): ", default=quality_default)
 
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
@@ -301,7 +304,7 @@ def main():
         else:
             speed_default = 'medium'
         valid_speeds = ["slow", "medium"]
-        print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        print(f"\nAvailable speed options for {codec_input}: {', '.join(valid_speeds)}")
         print("'slow'      - Preserves the most details, but takes a long time to encode")
         print("'medium'    - Significantly faster but falls off in the smaller details")
         encoder_speed = prompt(
