@@ -54,10 +54,10 @@ if not exist %MKVMERGE_EXE% (
 :: Check for Python executable
 if not exist "%PYTHON_EXE%" (
     <nul set /p="Python 3.11 not found. Installing... "
-    if not exist .bin\temp mkdir .bin\temp
-    curl -o .bin\temp\python_installer.exe %PYTHON_LINK% >nul 2>&1
-    .bin\temp\python_installer.exe /quiet Include_launcher=0 AssociateFiles=0 Shortcuts=0 InstallLauncherAllUsers=0 InstallAllUsers=0
-    rmdir /s /q "%cd%\.bin\temp"
+    if not exist bin\temp mkdir bin\temp
+    curl -o bin\temp\python_installer.exe %PYTHON_LINK% >nul 2>&1
+    bin\temp\python_installer.exe /quiet Include_launcher=0 AssociateFiles=0 Shortcuts=0 InstallLauncherAllUsers=0 InstallAllUsers=0
+    rmdir /s /q "%cd%\bin\temp"
     echo Done.
 )
 
@@ -68,8 +68,13 @@ if not exist %VENV_ACTIVATE% (
     %PYTHON_EXE% -m venv %VENV_DIR% >nul 2>&1
     call %VENV_ACTIVATE%
     echo Done.
+    <nul set /p="Installing packages... "
+    %VENV_PIP% install --upgrade pip setuptools wheel vswhere >nul 2>&1
+    %VENV_PIP% install -r requirements.txt >nul 2>&1
+    echo Done.
 ) else (
     call %VENV_ACTIVATE%
+    %VENV_PIP% install -r requirements.txt >nul 2>&1
 )
 
 :: Run the Python program

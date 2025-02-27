@@ -19,19 +19,15 @@ Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
 
 Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
 
-Constant Rate Factor (CRF)
-CRF 20 - Recommended for most scenarios - preserves the most details
-CRF 24 - Recommended for space saving   - minimal quality loss
-
-Enter quality setting: 20
-
+Use tune 'grain' if you want to preserve all the high level details (at the cost of larger filesize)
 Available tune options for h265: grain, fastdecode, zerolatency, psnr, ssim, animation
-Enter tune setting (optional): grain
+Enter tune setting (optional):
 
-Available speed options for h265: slow, medium, superfast
-'slow'      - Recommended for very grainy video - preserves more details
-'medium'    - Recommended for everything else   - more space efficient
-'superfast' - Recommended for fast encode time  - loses some quality
+Enter quality setting (CRF): 18
+
+Available speed options for h265: slow, medium
+'slow'      - Preserves the most details, but takes a long time to encode
+'medium'    - Significantly faster but falls off in the smaller details
 
 Enter encoder speed: medium
 

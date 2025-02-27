@@ -4,8 +4,8 @@ import subprocess
 import shutil
 import math
 import datetime
-import readline
 import platform
+from prompt_toolkit import prompt
 
 
 if platform.system() == "Windows":
@@ -20,14 +20,6 @@ else:
     ffmpeg = 'ffmpeg'
     ffprobe = 'ffprobe'
     mkvmerge = 'mkvmerge'
-
-
-def prefill_input(prompt, default):
-    readline.set_startup_hook(lambda: readline.insert_text(default))
-    try:
-        return input(prompt)
-    finally:
-        readline.set_startup_hook()
 
 
 def list_folders(directory):
@@ -179,14 +171,14 @@ if __name__ == "__main__":
 
     input_directory = ''
     while not input_directory:
-        print("\nSelect a folder to process:")
+        print("Select a folder to process:")
         current_directory = os.getcwd()
         folders = list_folders(current_directory)
 
         folder_choice = ''
         while True:
             try:
-                folder_choice = input(f"Select an option (1-{len(folders) + 2}): ")
+                folder_choice = prompt(f"Select an option (1-{len(folders) + 2}): ")
                 folder_choice = int(folder_choice)
                 break
             except ValueError:
@@ -201,8 +193,9 @@ if __name__ == "__main__":
 
     while not tv_show_title:
         tv_show_title = input("\nEnter the TV show name: ")
-    
-    output_directory = prefill_input("\nEnter the output folder: ", f"{tv_show_title}")
+
+    output_directory = prompt("\nEnter the output folder: ", default=tv_show_title)
+
     if output_directory == tv_show_title:
         output_directory = os.path.join(current_directory, tv_show_title)
 
@@ -230,14 +223,14 @@ if __name__ == "__main__":
             break
 
         selected_file = mkvs[file_choice - 1]
-        season = input("\nWhat season number is this file associated with? (1): ")
+        season = prompt("\nWhat season number is this file associated with?: ", default="1")
         season = season.zfill(2) if season else "01"
 
         # Ask for starting episode number
         starting_episode = ''
         while True:
             try:
-                starting_episode = input(f"\nWhich episode number does this file start at? (1): ")
+                starting_episode = prompt(f"\nWhich episode number does this file start at?: ", default="1")
                 starting_episode = starting_episode.zfill(2) if starting_episode else "01"
                 starting_episode = int(starting_episode)
                 break
