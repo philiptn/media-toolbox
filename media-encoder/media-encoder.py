@@ -10,11 +10,9 @@ from prompt_toolkit import prompt
 from better_ffmpeg_progress import FfmpegProcess
 from rich.console import Console
 
-
 # Calculate max_workers as 85% of the available logical cores
 max_cpu_usage = 85
 max_workers = int(os.cpu_count() * int(max_cpu_usage) / 100)
-
 
 if platform.system() == "Windows":
     # Update PATH to point to FFmpeg in bin folder if running Windows.
@@ -171,7 +169,7 @@ def natural_sort_key(s):
     Splits the string into a list of integers and lowercase strings.
     """
     return [int(text) if text.isdigit() else text.lower()
-            for text in re.split(r'(\d+)', s)]  # Raw string to fix SyntaxWarning
+            for text in re.split(r'(\d+)', s)]
 
 
 def delete_empty_media_dirs(media_dir, input_dir, media_extensions):
@@ -210,7 +208,8 @@ def main():
     done = False
     perform_auto_crop = False
     while not done:
-        perform_cropping = prompt("\nDo you want to remove any black bars in the video stream? (yes/no): ", default="yes")
+        perform_cropping = prompt("\nDo you want to remove any black bars in the video stream? (yes/no): ",
+                                  default="yes")
         if perform_cropping in ['yes', 'y']:
             done = True
             cropping = True
@@ -233,7 +232,8 @@ def main():
     # **Optional Aspect Ratio Resizing**
     done = False
     while not done:
-        perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ", default="no")
+        perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ",
+                                default="no")
         if perform_resize in ['yes', 'y']:
             done = True
             aspect_ratio = prompt("\nEnter output aspect ratio: ", default="16:9")
@@ -269,18 +269,16 @@ def main():
     # Define encoder-specific options
     encoder_options = {
         'libx264': {
-            # -bf 4: Use up to 4 consecutive B-frames, increasing compression efficiency by referencing more frames.
-            # -rc-lookahead 32: Pre-scan 32 upcoming frames to allocate bits more effectively, improving scene transitions.
-            # -aq-mode 3: Employ advanced adaptive quantization, giving more bits to complex areas for clearer detail.
-            # -b-pyramid normal: Allow B-frames to serve as references for other frames, boosting overall compression.
-            # -coder 1: Enable CABAC entropy coding, improving compression without sacrificing quality.
+            # -bf 4: Use up to 4 consecutive B-frames, increasing compression efficiency
+            # -rc-lookahead 32: Pre-scan 32 upcoming frames
+            # -aq-mode 3: Employ advanced adaptive quantization
+            # -b-pyramid normal: Allow B-frames to serve as references
+            # -coder 1: Enable CABAC entropy coding
             'options': ['-bf', '4', '-rc-lookahead', '32', '-aq-mode', '3', '-b-pyramid', 'normal', '-coder', '1'],
             'pix_fmt': None,
         },
         'libx265': {
-            # rc-lookahead=32: Analyze the next 32 frames to smoothly manage bitrate and maintain consistent quality.
-            # aq-mode=3: Deploy a more complex AQ scheme that redistributes bitrate for sharper detail in challenging areas.
-            # bframes=4: Insert up to 4 consecutive B-frames, enabling higher compression ratios with minimal quality loss.
+            # rc-lookahead=32, aq-mode=3, bframes=4
             'options': ['-x265-params', 'rc-lookahead=32:aq-mode=3:bframes=4:no-sao=1'],
             'pix_fmt': None,
         },
@@ -307,16 +305,18 @@ def main():
     # Show available tune options based on selected codec
     if available_tune_options:
         default_tune = ''
-        print("\nUse tune 'grain' if you want to preserve all the high level details (at the cost of larger filesize)")
+        print("\nUse tune 'grain' if you want to preserve all the high-level details (at the cost of larger filesize)")
         print(f"Available tune options for {codec_input}: {', '.join(available_tune_options)}")
         tune_option = prompt("Enter tune setting (optional): ", default=default_tune)
         if tune_option and tune_option not in available_tune_options:
-            print(f"Invalid tune option for codec {codec_input}. Available options are: {', '.join(available_tune_options)}")
+            print(f"Invalid tune option for codec {codec_input}. "
+                  f"Available options are: {', '.join(available_tune_options)}")
             sys.exit(1)
     else:
         tune_option = ''
         print(f"No tune options available for codec {codec_input}.")
 
+    # Default CRF: 20 if 'grain' tune, otherwise 18
     if tune_option == 'grain':
         quality_default = '20'
     else:
@@ -325,42 +325,37 @@ def main():
 
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
+        # For H.264/H.265: slow or medium
         if tune_option == 'grain':
             speed_default = 'slow'
         else:
             speed_default = 'medium'
         valid_speeds = ["slow", "medium"]
         print(f"\nAvailable speed options for {codec_input}: {', '.join(valid_speeds)}")
-        print("'slow'      - Preserves the most details, but takes a long time to encode")
-        print("'medium'    - Significantly faster but falls off in the smaller details")
-        encoder_speed = prompt(
-            f"\nEnter encoder speed: ",
-            default=speed_default
-        )
+        print("'slow'      - Preserves more detail, but slower")
+        print("'medium'    - Faster but with less detail")
+        encoder_speed = prompt(f"\nEnter encoder speed: ", default=speed_default)
         if encoder_speed not in valid_speeds:
             print("Invalid speed/preset choice. Exiting.")
             sys.exit(1)
     elif codec == 'libvpx-vp9':
-        valid_speeds = [f"'{str(i)}'" for i in range(9)]  # 0 through 8
+        # For VP9: numeric speeds 0-8
+        valid_speeds = [str(i) for i in range(9)]  # 0 through 8
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
-        encoder_speed = prompt(
-            f"Enter encoder speed: ",
-            default="4"
-        )
+        encoder_speed = prompt("Enter encoder speed: ", default="4")
         if encoder_speed not in valid_speeds:
             print("Invalid speed (cpu-used) choice. Exiting.")
             sys.exit(1)
     elif codec == 'libaom-av1':
-        valid_speeds = [f"'{str(i)}'" for i in range(9)]  # 0 through 8
+        # For AV1: numeric speeds 0-8
+        valid_speeds = [str(i) for i in range(9)]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
-        encoder_speed = prompt(
-            f"Encoder speed: ",
-            default="4"
-        )
+        encoder_speed = prompt("Encoder speed: ", default="4")
         if encoder_speed not in valid_speeds:
             print("Invalid speed (cpu-used) choice. Exiting.")
             sys.exit(1)
 
+    # Fine-tune psy-rd if using x264 or x265
     if codec in ['libx264', 'libx265']:
         if codec == 'libx264':
             encoder_options[codec]['options'].extend(['-psy-rd', '3.0:0.0'])
@@ -370,6 +365,7 @@ def main():
                     encoder_options[codec]['options'][i + 1] += ':psy-rd=3:psy-rdoq=3'
                     break
 
+    # CPU usage prompt
     cpu_usage_percentage = prompt("\nEnter the maximum CPU usage percentage (e.g., '50' for 50%): ", default="auto")
 
     # Validate CPU usage percentage and calculate number of threads
@@ -394,10 +390,22 @@ def main():
         else:
             divisor = 0.8
         number_of_threads = max(1, int(num_cores * (cpu_usage_percentage / 100) // divisor))
-        # Limit to 16 threads based on x264 documentation
+        # Limit to 16 threads for x264, as recommended in some docs
         if codec.lower() == "libx264":
             number_of_threads = min(16, number_of_threads)
         print(f"\nUsing {number_of_threads} encoder thread(s) based on CPU usage percentage.")
+
+    # Prompt for a custom FFmpeg parameter string
+    done = False
+    user_custom_ffmpeg = ""
+    while not done:
+        add_ffmpeg_params = prompt("\nDo you want to add custom FFmpeg parameters? (yes/no): ", default="no")
+        if add_ffmpeg_params.lower() in ['yes', 'y']:
+            user_custom_ffmpeg = prompt("\nEnter custom ffmpeg parameters as a single string: ", default="")
+            done = True
+        elif add_ffmpeg_params.lower() in ['no', 'n']:
+            done = True
+            user_custom_ffmpeg = ""
 
     ffmpeg_ui = prompt("\nSelect preferred FFmpeg UI (compact, advanced): ", default="compact")
 
@@ -458,7 +466,8 @@ def main():
 
             # **Compute Output Dimensions and Padding (if resizing is enabled)**
             if resizing:
-                output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
+                output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = \
+                    calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
             else:
                 # If no resizing, output dimensions are the same as cropped dimensions
                 output_width = cropped_width
@@ -493,9 +502,8 @@ def main():
                 os.makedirs(output_subdir)
 
             temp_video_file = os.path.join(output_subdir, 'temp_' + os.path.basename(media_file))
-            cmd_ffmpeg = [
-                ffmpeg, '-y', '-i', media_file
-            ]
+
+            cmd_ffmpeg = [ffmpeg, '-y', '-i', media_file]
 
             if filter_str:
                 cmd_ffmpeg.extend(['-vf', filter_str])
@@ -529,17 +537,25 @@ def main():
             if tune_option:
                 cmd_ffmpeg.extend(['-tune', tune_option])
 
+            # Add user-custom parameters if provided
+            if user_custom_ffmpeg.strip():
+                # A simple split() handles space-delimited arguments
+                cmd_ffmpeg.extend(user_custom_ffmpeg.split())
+
+            # Finally, the temporary output
             cmd_ffmpeg.append(temp_video_file)
 
+            # **Start Video Encoding**
+            console = Console()
             if ffmpeg_ui.lower() == "compact":
-                # **Start Video Encoding**
                 null_device = "/dev/null" if os.name != "nt" else "NUL"
-                console = Console()
                 console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
                 process = FfmpegProcess(cmd_ffmpeg, ffmpeg_log_file=null_device)
                 return_code = process.run()
+                if return_code != 0:
+                    print(f"Error: FFmpeg returned a non-zero exit code ({return_code}). Skipping file.")
+                    continue
             else:
-                console = Console()
                 console.print(f"\n{' '.join(cmd_ffmpeg)}\n", style="bold bright_black", highlight=False)
                 try:
                     subprocess.run(cmd_ffmpeg, check=True)
@@ -559,7 +575,7 @@ def main():
                 basename = pattern.sub('', basename)
             output_file = os.path.join(output_subdir, basename + '.mkv')
 
-            # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio and Subtitles**
+            # **Build MKVMerge Command to Merge Re-encoded Video with Original Audio/Subtitles**
             cmd_mkvmerge = [
                 mkvmerge,
                 '-o', output_file,
@@ -573,13 +589,13 @@ def main():
                 print(f"Error merging files for {media_file}:\n{e.stderr}")
                 continue
 
+            # Clean up
             os.remove(temp_video_file)
             os.remove(media_file)
-
-            # **Delete Empty Media Directories**
             media_dir = os.path.dirname(media_file)
             delete_empty_media_dirs(media_dir, input_dir, media_extensions)
 
+            # Check again for new stable files
             remaining_files = wait_for_stable_files(input_dir)
 
 
