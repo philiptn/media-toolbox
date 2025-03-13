@@ -16,6 +16,8 @@ set FFMPEG_LINK=https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1-full_buil
 set MKVMERGE_EXE=.\.bin\mkvtoolnix\mkvmerge.exe
 set MKVTOOLNIX_LINK=https://mkvtoolnix.download/windows/releases/89.0/mkvtoolnix-64-bit-89.0.7z
 
+set HANDBRAKE_EXE=.\.bin\handbrake\HandBrakeCLI.exe
+set HANDBRAKE_LINK=https://github.com/HandBrake/HandBrake/releases/download/1.9.1/HandBrakeCLI-1.9.1-win-x86_64.zip
 
 :: Ensure bin directory exists
 if not exist .bin mkdir .bin
@@ -31,6 +33,21 @@ if not exist %FFMPEG_EXE% (
     :: Move all .exe files to bin\ffmpeg
     for /r .bin\ffmpeg %%F in (*.exe) do (
         move "%%F" .bin\ffmpeg >nul 2>&1
+    )
+    echo Done.
+)
+
+:: Check for ffmpeg executable
+if not exist %HANDBRAKE_EXE% (
+    <nul set /p="HandBrake not found. Downloading... "
+    if not exist .bin\handbrake mkdir .bin\handbrake
+    curl -L -o .bin\handbrake\handbrake.zip %HANDBRAKE_LINK% >nul 2>&1
+    tar -xf .bin\handbrake\handbrake.zip -C .bin\handbrake
+    del .bin\handbrake\handbrake.zip
+
+    :: Move all .exe files to bin\handbrake
+    for /r .bin\handbrake %%F in (*.exe) do (
+        move "%%F" .bin\handbrake >nul 2>&1
     )
     echo Done.
 )

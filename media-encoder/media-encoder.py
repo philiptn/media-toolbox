@@ -24,10 +24,12 @@ if platform.system() == "Windows":
     ffmpeg = r'.bin\ffmpeg\ffmpeg.exe'
     ffprobe = r'.bin\ffmpeg\ffprobe.exe'
     mkvmerge = r'.bin\mkvtoolnix\mkvmerge.exe'
+    handbrake = r'.bin\handbrake\HandBrakeCLI.exe'
 else:
     ffmpeg = 'ffmpeg'
     ffprobe = 'ffprobe'
     mkvmerge = 'mkvmerge'
+    handbrake = 'HandBrakeCLI'
 
 
 def get_video_dimensions(filename):
@@ -45,6 +47,24 @@ def get_video_dimensions(filename):
     except ValueError:
         print(f"Error parsing video dimensions for {filename}: {result.stdout}")
         return None, None
+
+
+def auto_crop(file):
+    try:
+        hb_output = subprocess.check_output(f'"{handbrake}" -i "{file}" --scan -t 0', stderr=subprocess.STDOUT,
+                                            shell=True).decode()
+        autocrop_str = re.search(r"\+ autocrop: (.+)", hb_output).group(1)
+        top, bottom, left, right = map(int, autocrop_str.split('/'))
+
+        # Ensure values are multiples of 4
+        top = 4 * (top // 4)
+        bottom = 4 * (bottom // 4)
+        left = 4 * (left // 4)
+        right = 4 * (right // 4)
+
+        return f"{left},{right},{top},{bottom}"
+    except Exception as e:
+        return f"0,0,0,0"
 
 
 def get_all_files(path):
@@ -188,17 +208,23 @@ def main():
 
     # **Optional Cropping**
     done = False
+    perform_auto_crop = False
     while not done:
-        perform_cropping = prompt("\nDo you want to crop the video stream? (yes/no): ", default="no")
+        perform_cropping = prompt("\nDo you want to remove any black bars in the video stream? (yes/no): ", default="yes")
         if perform_cropping in ['yes', 'y']:
             done = True
-            crop_values = prompt("\nEnter crop values (left, right, top, bottom): ", default="0,0,104,104")
-            try:
-                left, right, top, bottom = map(int, crop_values.split(','))
-                cropping = True
-            except ValueError:
-                print("Invalid crop values. Exiting.")
-                sys.exit(1)
+            cropping = True
+            crop_values = prompt("\nEnter crop values (left,right,top,bottom): ", default="auto")
+            if crop_values == 'auto':
+                done = True
+                perform_auto_crop = True
+            else:
+                try:
+                    left, right, top, bottom = map(int, crop_values.split(','))
+                    cropping = True
+                except ValueError:
+                    print("Invalid crop values. Exiting.")
+                    sys.exit(1)
         elif perform_cropping in ['no', 'n']:
             done = True
             cropping = False
@@ -418,6 +444,9 @@ def main():
 
             # **Compute Cropped Dimensions (if cropping is enabled)**
             if cropping:
+                if perform_auto_crop:
+                    auto_crop_values = auto_crop(media_file)
+                    left, right, top, bottom = map(int, auto_crop_values.split(','))
                 cropped_width = orig_width - left - right
                 cropped_height = orig_height - top - bottom
                 if cropped_width <= 0 or cropped_height <= 0:
@@ -455,7 +484,6 @@ def main():
             # Build filter string
             filter_str = ",".join(filter_chain) if filter_chain else None
 
-            # **Build FFmpeg Command to Re-encode Video Only**
             # Determine relative path
             rel_path = os.path.relpath(media_file, input_dir)
             rel_dir = os.path.dirname(rel_path)
