@@ -15,7 +15,7 @@ if ! command -v mkvpropedit &> /dev/null || ! command -v mkvmerge &> /dev/null; 
 fi
 
 # Process all MKV files recursively
-find "$INPUT_DIR" -type f -name "*.mkv" | while IFS= read -r FILE; do
+find "$INPUT_DIR" -type f -name "*.mkv" | sort | while IFS= read -r FILE; do
     # Extract numeric track IDs only and increment by 1
     TRACK_IDS=$(mkvmerge -i "$FILE" | grep -oP 'Track ID \d+' | awk '{print $3}')
 
