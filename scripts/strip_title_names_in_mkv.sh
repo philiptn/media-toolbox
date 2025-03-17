@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Check if an input directory is provided
+# If no argument is provided, use the current directory; otherwise use the provided argument.
 if [ -z "$1" ]; then
-    echo "Usage: $0 <input_folder>"
-    exit 1
+    INPUT_DIR="."
+else
+    INPUT_DIR="$1"
 fi
-
-INPUT_DIR="$1"
 
 # Ensure mkvpropedit and mkvmerge are installed
 if ! command -v mkvpropedit &> /dev/null || ! command -v mkvmerge &> /dev/null; then
