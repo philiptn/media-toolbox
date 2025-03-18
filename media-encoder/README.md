@@ -13,25 +13,29 @@ Note: If you are using Windows Command Prompt, replace all `python3` and `pip3` 
 
 #### Example usage:
 ````text
-Do you want to crop the video stream? (yes/no): no
+Do you want to remove any black bars in the video stream? (yes/no): yes
+
+Enter crop values (left,right,top,bottom): auto
 
 Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
 
 Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
 
-Use tune 'grain' if you want to preserve all the high level details (at the cost of larger filesize)
+CRF 18 - Effectively transparent from source in most cases
+CRF 20 - More space saving, with minimal loss to some high-level details
+Enter quality setting (CRF): 18
+
+CRF is set to 18. No tune needed (even with grainy source material)
 Available tune options for h265: grain, fastdecode, zerolatency, psnr, ssim, animation
 Enter tune setting (optional):
 
-Enter quality setting (CRF): 18
-
+No tune has been applied. Using speed 'medium' is recommended.
 Available speed options for h265: slow, medium
-'slow'      - Preserves the most details, but takes a long time to encode
-'medium'    - Significantly faster but falls off in the smaller details
-
 Enter encoder speed: medium
 
 Enter the maximum CPU usage percentage (e.g., '50' for 50%): auto
+
+Do you want to add custom FFmpeg parameters? (yes/no): no
 
 Select preferred FFmpeg UI (compact, advanced): compact
 

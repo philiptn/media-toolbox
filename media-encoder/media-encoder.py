@@ -299,13 +299,22 @@ def main():
             print(f"- {key}")
         sys.exit(1)
 
+    quality_default = '18'
+    print("\nCRF 18 - Effectively transparent from source in most cases")
+    print("CRF 20 - More space saving, with minimal loss to some high-level details")
+    quality = prompt("Enter quality setting (CRF): ", default=quality_default)
+
     codec = codec_map[codec_input]
     available_tune_options = codec_tune_options.get(codec, [])
 
     # Show available tune options based on selected codec
     if available_tune_options:
         default_tune = ''
-        print("\nUse tune 'grain' if you want to preserve all the high-level details (at the cost of larger filesize)")
+        print()
+        if int(quality) > 18:
+            print("CRF is above 18. Recommending using tune 'grain' if the source video is grainy.")
+        elif int(quality) == 18:
+            print("CRF is set to 18. No tune needed (even with grainy source material)")
         print(f"Available tune options for {codec_input}: {', '.join(available_tune_options)}")
         tune_option = prompt("Enter tune setting (optional): ", default=default_tune)
         if tune_option and tune_option not in available_tune_options:
@@ -316,25 +325,18 @@ def main():
         tune_option = ''
         print(f"No tune options available for codec {codec_input}.")
 
-    # Default CRF: 20 if 'grain' tune, otherwise 18
-    if tune_option == 'grain':
-        quality_default = '20'
-    else:
-        quality_default = '18'
-    quality = prompt("\nEnter quality setting (CRF): ", default=quality_default)
-
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
-        # For H.264/H.265: slow or medium
+        print()
         if tune_option == 'grain':
             speed_default = 'slow'
+            print("Tune 'grain' is selected. Using speed 'slow' is recommended for best results.")
         else:
             speed_default = 'medium'
+            print("No tune has been applied. Using speed 'medium' is recommended.")
         valid_speeds = ["slow", "medium"]
-        print(f"\nAvailable speed options for {codec_input}: {', '.join(valid_speeds)}")
-        print("'slow'      - Preserves more detail, but slower")
-        print("'medium'    - Faster but with less detail")
-        encoder_speed = prompt(f"\nEnter encoder speed: ", default=speed_default)
+        print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
+        encoder_speed = prompt(f"Enter encoder speed: ", default=speed_default)
         if encoder_speed not in valid_speeds:
             print("Invalid speed/preset choice. Exiting.")
             sys.exit(1)
