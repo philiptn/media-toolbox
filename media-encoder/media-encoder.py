@@ -231,23 +231,27 @@ def main():
 
     # **Optional Aspect Ratio Resizing**
     done = False
-    while not done:
-        perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ",
-                                default="no")
-        if perform_resize in ['yes', 'y']:
-            done = True
-            aspect_ratio = prompt("\nEnter output aspect ratio: ", default="16:9")
-            try:
-                ar_width, ar_height = map(int, aspect_ratio.split(':'))
-                desired_ar = ar_width / ar_height
-                resizing = True
-            except ValueError:
-                print("Invalid aspect ratio. Exiting.")
-                sys.exit(1)
-        elif perform_resize in ['no', 'n']:
-            done = True
-            resizing = False
-            desired_ar = None  # Indicates no resizing
+    if not perform_auto_crop:
+        while not done:
+            perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ",
+                                    default="no")
+            if perform_resize in ['yes', 'y']:
+                done = True
+                aspect_ratio = prompt("\nEnter output aspect ratio: ", default="16:9")
+                try:
+                    ar_width, ar_height = map(int, aspect_ratio.split(':'))
+                    desired_ar = ar_width / ar_height
+                    resizing = True
+                except ValueError:
+                    print("Invalid aspect ratio. Exiting.")
+                    sys.exit(1)
+            elif perform_resize in ['no', 'n']:
+                done = True
+                resizing = False
+                desired_ar = None  # Indicates no resizing
+    else:
+        resizing = False
+        desired_ar = None
 
     # Map user-friendly codec names to ffmpeg encoder names
     codec_map = {
