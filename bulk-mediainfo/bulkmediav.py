@@ -117,27 +117,22 @@ def main():
         # Process audio track(s) to determine the main audio language.
         # Default is an empty string if nothing is found.
         audio_lang = ""
-        for track in media_info.tracks:
-            if track.track_type == 'Audio':
-                # If a default audio track is flagged, use its language.
-                if getattr(track, 'default', None) in ['Yes', '1']:
-                    if track.language is not None:
-                        audio_lang = track.language
-                    break
-                # Otherwise, if language info is present, use the first encountered audio track.
-                if track.language:
-                    audio_lang = track.language
+        audio_tracks = [track for track in media_info.tracks if track.track_type == 'Audio']
+        if audio_tracks:
+            # Try to find default track first
+            default_audio = next((track for track in audio_tracks if getattr(track, 'default', None) in ['Yes', '1']),
+                                 None)
+            selected_audio = default_audio or audio_tracks[0]
+            audio_lang = selected_audio.language if selected_audio.language else 'und'
 
         # Process subtitle track(s) to determine the main subtitle language.
         subtitle_lang = ""
-        for track in media_info.tracks:
-            if track.track_type == 'Text':
-                if getattr(track, 'default', None) in ['Yes', '1']:
-                    if track.language is not None:
-                        subtitle_lang = track.language
-                    break
-                if track.language:
-                    subtitle_lang = track.language
+        subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
+        if subtitle_tracks:
+            default_subtitle = next(
+                (track for track in subtitle_tracks if getattr(track, 'default', None) in ['Yes', '1']), None)
+            selected_subtitle = default_subtitle or subtitle_tracks[0]
+            subtitle_lang = selected_subtitle.language if selected_subtitle.language else 'und'
 
         # Get file size in bytes
         filesize_bytes = os.path.getsize(video_file)
