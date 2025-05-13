@@ -332,11 +332,11 @@ def main():
     encoder_speed = None
     if codec in ['libx264', 'libx265']:
         print()
+        speed_default = 'medium'
         if tune_option == 'grain':
             speed_default = 'slow'
             print("Tune 'grain' is selected. Using speed 'slow' is recommended for best results.")
-        else:
-            speed_default = 'medium'
+        elif tune_option == '':
             print("No tune has been applied. Using speed 'medium' is recommended.")
         valid_speeds = ["slow", "medium"]
         print(f"Available speed options for {codec_input}: {', '.join(valid_speeds)}")
