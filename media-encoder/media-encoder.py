@@ -407,7 +407,7 @@ def main():
     while not done:
         add_ffmpeg_params = prompt("\nDo you want to add custom FFmpeg parameters? (yes/no): ", default="no")
         if add_ffmpeg_params.lower() in ['yes', 'y']:
-            user_custom_ffmpeg = prompt("\nEnter custom ffmpeg parameters as a single string: ", default="")
+            user_custom_ffmpeg = prompt("\nEnter custom ffmpeg parameters as a single string (no quotes): ", default="-vf scale=-2:1080")
             done = True
         elif add_ffmpeg_params.lower() in ['no', 'n']:
             done = True
