@@ -229,29 +229,35 @@ def main():
             cropping = False
             left = right = top = bottom = 0  # Defaults, won't affect cropping if not used
 
-    # **Optional Aspect Ratio Resizing**
-    done = False
-    if not perform_auto_crop:
-        while not done:
-            perform_resize = prompt("\nDo you want to resize the video stream to a specific aspect ratio? (yes/no): ",
-                                    default="no")
-            if perform_resize in ['yes', 'y']:
-                done = True
-                aspect_ratio = prompt("\nEnter output aspect ratio: ", default="16:9")
-                try:
-                    ar_width, ar_height = map(int, aspect_ratio.split(':'))
-                    desired_ar = ar_width / ar_height
-                    resizing = True
-                except ValueError:
-                    print("Invalid aspect ratio. Exiting.")
-                    sys.exit(1)
-            elif perform_resize in ['no', 'n']:
-                done = True
-                resizing = False
-                desired_ar = None  # Indicates no resizing
-    else:
-        resizing = False
-        desired_ar = None
+    # **Optional Resolution Rescaling Prompt**
+    resizing = False
+    custom_width = custom_height = None
+
+    rescale_prompt = prompt("\nDo you want to limit the video resolution? (yes/no): ", default="no").lower()
+    if rescale_prompt in ["yes", "y"]:
+        print("\nVideo resolutions:")
+        print("1. 1080p")
+        print("2. 720p")
+        print("3. Custom")
+
+        resolution_choice = prompt("\nSelect a resolution target: ", default="1").strip()
+        if resolution_choice == "1":
+            resizing = True
+            custom_width, custom_height = 1920, -2
+        elif resolution_choice == "2":
+            resizing = True
+            custom_width, custom_height = 1280, -2
+        elif resolution_choice == "3":
+            try:
+                custom_width = int(prompt("\nEnter custom width: "))
+                custom_height = int(prompt("Enter custom height: "))
+                resizing = True
+            except ValueError:
+                print("Invalid custom resolution entered.")
+                sys.exit(1)
+        else:
+            print("Invalid resolution choice.")
+            sys.exit(1)
 
     # Map user-friendly codec names to ffmpeg encoder names
     codec_map = {
@@ -407,7 +413,7 @@ def main():
     while not done:
         add_ffmpeg_params = prompt("\nDo you want to add custom FFmpeg parameters? (yes/no): ", default="no")
         if add_ffmpeg_params.lower() in ['yes', 'y']:
-            user_custom_ffmpeg = prompt("\nEnter custom ffmpeg parameters as a single string (no quotes): ", default="-vf scale=-2:1080")
+            user_custom_ffmpeg = prompt("\nEnter custom ffmpeg parameters as a single string (no quotes): ", default="")
             done = True
         elif add_ffmpeg_params.lower() in ['no', 'n']:
             done = True
@@ -472,8 +478,7 @@ def main():
 
             # **Compute Output Dimensions and Padding (if resizing is enabled)**
             if resizing:
-                output_width, output_height, pad_left, pad_right, pad_top, pad_bottom, scale = \
-                    calculate_output_dimensions(cropped_width, cropped_height, desired_ar)
+                output_width, output_height = custom_width, custom_height
             else:
                 # If no resizing, output dimensions are the same as cropped dimensions
                 output_width = cropped_width
@@ -488,14 +493,9 @@ def main():
                 crop_filter = f"crop=w=iw-{left}-{right}:h=ih-{top}-{bottom}:x={left}:y={top}"
                 filter_chain.append(crop_filter)
             if resizing:
-                if scale:
-                    # Scale filter
-                    scale_filter = f"scale=w={output_width}:h={output_height}"
-                    filter_chain.append(scale_filter)
-                # Pad filter
-                if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-                    pad_filter = f"pad=w={output_width}:h={output_height}:x={pad_left}:y={pad_top}:color=black"
-                    filter_chain.append(pad_filter)
+                scale_filter = f"scale=w={output_width}:h={output_height}"
+                filter_chain.append(scale_filter)
+
             # Build filter string
             filter_str = ",".join(filter_chain) if filter_chain else None
 
