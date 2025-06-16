@@ -1,23 +1,30 @@
 # media-encoder
-Uses ffmpeg and mkvmerge to encode and repack the media. Includes optimized encoding parameters, as well as suggested CRF settings for each codec/tuning. Also supports cropping and resizing.
-#### How to use:
-Note: If you are using Windows Command Prompt, replace all `python3` and `pip3` commands with `python` and `pip`. 
+A custom media encoder written in Python. Video encoding is performed by FFmpeg, with HandBrakeCLI used for auto-cropping and mkvmerge for repacking the media. Supports various video formats, with optimized encoding parameters such as extended b-frames, rc-lookahead and more.
+
+### How to use:
+
+#### Windows
+All required packages and binaries will be downloaded automatically.
+1. Put media files inside `input/`
+2. Double-click `media-encoder.bat`
+3. Encoded media will be saved to the `output/` folder. These can also be previewed using VLC media player while they are being encoded.
+
+#### Linux
 1. Navigate to the media-encoder folder: `cd media-encoder`
-2. Put media files inside `input/`.
-3. Make sure that you have `ffmpeg` and `mkvmerge` installed. If not, run `prerequisites.sh` to install dependencies (Ubuntu/Debian). If you are running Windows, make sure that `ffmpeg` , `ffrobe` and `mkvmerge` are available in `PATH`.
+2. Put media files inside `input/`
+3. Make sure that you have `ffmpeg` and `mkvmerge` installed. If not, run `prerequisites.sh` to install dependencies (Ubuntu/Debian).
 4. Create a virtual environment using `python3 -m venv venv` and run `venv/bin/activate` to activate it.  
-   If you are using Windows, create the environment with `python -m venv venv_win` and activate it with `venv_win\Scripts\activate`. 
-5. Install the required pip packages using `pip3 install -r requirements`.
+5. Install the required pip packages using `pip3 install -r requirements`
 6. Run the program:`python3 media-encoder.py`
 7. Encoded media will be saved to the `output/` folder. These can also be previewed using VLC media player while they are being encoded.
 
-#### Example usage:
+### Example run:
 ````text
 Do you want to remove any black bars in the video stream? (yes/no): yes
 
 Enter crop values (left,right,top,bottom): auto
 
-Do you want to resize the video stream to a specific aspect ratio? (yes/no): no
+Do you want to limit the video resolution? (yes/no): no
 
 Enter output codec (e.g., 'h264', 'h265', 'vp9', 'av1'): h265
 
