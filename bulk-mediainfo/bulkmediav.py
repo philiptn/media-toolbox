@@ -75,8 +75,8 @@ def main():
         for track in media_info.tracks:
             if track.track_type == 'Video':
                 codec = track.codec_id or 'Unknown'
+                codec_profile = track.format_profile or 'Unknown'
                 fps = track.frame_rate or 'Unknown'
-                chroma_subsampling = track.chroma_subsampling or 'Unknown'
                 interlacing = track.scan_type or 'Unknown'  # 'Interlaced', 'Progressive', etc.
                 if interlacing in ('Interlaced', 'MBAFF'):
                     field_order = track.scan_order or 'Unknown'  # 'TFF', 'BFF', etc.
@@ -150,6 +150,7 @@ def main():
             'filesize': filesize_sort,  # For sorting (bytes)
             'filesize_display': filesize_display,
             'codec': codec,
+            'codec_profile': codec_profile,
             'fps': float(fps) if fps != 'Unknown' else None,
             'fps_display': str(fps),
             'interlace': field_order,
@@ -159,7 +160,6 @@ def main():
             'avg_bitrate_display': avg_bitrate_display,
             'max_bitrate': max_bitrate_mbps,
             'max_bitrate_display': max_bitrate_display,
-            'color_subsampling': chroma_subsampling,
             'audio_lang': audio_lang,
             'subtitle_lang': subtitle_lang,
             'filename': filename
@@ -177,9 +177,9 @@ def main():
 
     # Map command-line sort keys to actual data keys
     sort_key_map = {
-        'chroma': 'color_subsampling',
         'filesize': 'filesize',
         'codec': 'codec',
+        'codec_profile': 'codec_profile',
         'fps': 'fps',
         'interlace': 'interlace',
         'aspect': 'aspect',
@@ -206,15 +206,15 @@ def main():
     headers = {
         'filesize_display': 'Filesize',
         'codec': 'Codec',
+        'codec_profile': 'Profile',
         'fps_display': 'FPS',
         'interlace': 'Interlace',
         'aspect': 'Aspect',
         'resolution': 'Resolution',
         'avg_bitrate_display': 'Avg Bitrate',
         'max_bitrate_display': 'Max Bitrate',
-        'color_subsampling': 'Chroma',
         'audio_lang': 'Audio',
-        'subtitle_lang': 'Subtitle',
+        'subtitle_lang': 'Subtitles',
         'filename': 'Filename'
     }
     # Determine the maximum width for each column based on header and data lengths.
@@ -242,13 +242,13 @@ def main():
         print(format_string.format(
             data['filesize_display'],
             data['codec'],
+            data['codec_profile'],
             data['fps_display'],
             data['interlace'],
             data['aspect'],
             data['resolution'],
             data['avg_bitrate_display'],
             data['max_bitrate_display'],
-            data['color_subsampling'],
             data['audio_lang'],
             data['subtitle_lang'],
             data['filename']
