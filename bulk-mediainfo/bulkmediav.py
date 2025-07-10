@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description='Check video files in a folder and display metadata.')
     parser.add_argument('folder', nargs='?', default='.', help='Path to the folder containing video files, defaults to current folder.')
     parser.add_argument('-r', '--recursive', action='store_true', help='Recursively search subfolders for video files.')
-    parser.add_argument('--sort', choices=['filesize', 'codec', 'fps', 'interlace', 'aspect', 'resolution', 'avg_bitrate', 'chroma', 'max_bitrate', 'filename'], help='Column to sort the output by. Defaults to filename.')
+    parser.add_argument('--sort', choices=['filesize', 'codec', 'codec_profile', 'fps', 'interlace', 'aspect', 'resolution', 'avg_bitrate', 'chroma', 'max_bitrate', 'filename'], help='Column to sort the output by. Defaults to filename.')
     args = parser.parse_args()
 
     video_extensions = ['.mkv', '.mp4', '.mov', '.avi']
