@@ -76,6 +76,7 @@ def main():
             if track.track_type == 'Video':
                 codec = track.codec_id or 'Unknown'
                 fps = track.frame_rate or 'Unknown'
+                chroma_subsampling = track.chroma_subsampling or 'Unknown'
                 interlacing = track.scan_type or 'Unknown'  # 'Interlaced', 'Progressive', etc.
                 if interlacing in ('Interlaced', 'MBAFF'):
                     field_order = track.scan_order or 'Unknown'  # 'TFF', 'BFF', etc.
@@ -114,25 +115,21 @@ def main():
                     max_bitrate_display = 'N/A'
                 break  # Only process the first video track
 
-        # Process audio track(s) to determine the main audio language.
-        # Default is an empty string if nothing is found.
-        audio_lang = ""
         audio_tracks = [track for track in media_info.tracks if track.track_type == 'Audio']
-        if audio_tracks:
-            # Try to find default track first
-            default_audio = next((track for track in audio_tracks if getattr(track, 'default', None) in ['Yes', '1']),
-                                 None)
-            selected_audio = default_audio or audio_tracks[0]
-            audio_lang = selected_audio.language if selected_audio.language else 'und'
+        audio_langs = []
+        for track in audio_tracks:
+            lang = track.language if track.language else 'und'
+            if lang not in audio_langs:
+                audio_langs.append(lang)
+        audio_lang = ','.join(audio_langs) if audio_langs else 'und'
 
-        # Process subtitle track(s) to determine the main subtitle language.
-        subtitle_lang = ""
         subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
-        if subtitle_tracks:
-            default_subtitle = next(
-                (track for track in subtitle_tracks if getattr(track, 'default', None) in ['Yes', '1']), None)
-            selected_subtitle = default_subtitle or subtitle_tracks[0]
-            subtitle_lang = selected_subtitle.language if selected_subtitle.language else 'und'
+        subtitle_langs = []
+        for track in subtitle_tracks:
+            lang = track.language if track.language else 'und'
+            if lang not in subtitle_langs:
+                subtitle_langs.append(lang)
+        subtitle_lang = ','.join(subtitle_langs) if subtitle_langs else 'und'
 
         # Get file size in bytes
         filesize_bytes = os.path.getsize(video_file)
@@ -162,6 +159,7 @@ def main():
             'avg_bitrate_display': avg_bitrate_display,
             'max_bitrate': max_bitrate_mbps,
             'max_bitrate_display': max_bitrate_display,
+            'color_subsampling': chroma_subsampling,
             'audio_lang': audio_lang,
             'subtitle_lang': subtitle_lang,
             'filename': filename
@@ -200,11 +198,11 @@ def main():
         'resolution': 'Resolution',
         'avg_bitrate_display': 'Avg Bitrate',
         'max_bitrate_display': 'Max Bitrate',
+        'color_subsampling': 'Chroma',
         'audio_lang': 'Audio',
         'subtitle_lang': 'Subtitle',
         'filename': 'Filename'
     }
-
     # Determine the maximum width for each column based on header and data lengths.
     column_widths = {key: len(value) for key, value in headers.items()}
     for data in video_data_list:
@@ -236,6 +234,7 @@ def main():
             data['resolution'],
             data['avg_bitrate_display'],
             data['max_bitrate_display'],
+            data['color_subsampling'],
             data['audio_lang'],
             data['subtitle_lang'],
             data['filename']
