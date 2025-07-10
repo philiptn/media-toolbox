@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description='Check video files in a folder and display metadata.')
     parser.add_argument('folder', nargs='?', default='.', help='Path to the folder containing video files, defaults to current folder.')
     parser.add_argument('-r', '--recursive', action='store_true', help='Recursively search subfolders for video files.')
-    parser.add_argument('--sort', choices=['filesize', 'codec', 'fps', 'interlace', 'aspect', 'resolution', 'avg_bitrate', 'max_bitrate', 'filename'], help='Column to sort the output by. Defaults to filename.')
+    parser.add_argument('--sort', choices=['filesize', 'codec', 'fps', 'interlace', 'aspect', 'resolution', 'avg_bitrate', 'chroma', 'max_bitrate', 'filename'], help='Column to sort the output by. Defaults to filename.')
     args = parser.parse_args()
 
     video_extensions = ['.mkv', '.mp4', '.mov', '.avi']
@@ -175,8 +175,22 @@ def main():
     # Clear the progress line
     print(' ' * 80, end='\r')
 
-    # Set default sort key to 'filename' if no sort option is provided
-    sort_key = args.sort or 'filename'
+    # Map command-line sort keys to actual data keys
+    sort_key_map = {
+        'chroma': 'color_subsampling',
+        'filesize': 'filesize',
+        'codec': 'codec',
+        'fps': 'fps',
+        'interlace': 'interlace',
+        'aspect': 'aspect',
+        'resolution': 'resolution',
+        'avg_bitrate': 'avg_bitrate',
+        'max_bitrate': 'max_bitrate',
+        'filename': 'filename'
+    }
+    sort_key_arg = args.sort or 'filename'
+    sort_key = sort_key_map[sort_key_arg]
+
     if sort_key in ['filesize', 'avg_bitrate', 'max_bitrate']:
         descending = True
     else:
