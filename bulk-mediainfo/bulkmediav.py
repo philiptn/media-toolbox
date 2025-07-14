@@ -140,12 +140,15 @@ def main():
         audio_lang = ','.join(audio_langs) if audio_langs else 'und'
 
         subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
-        subtitle_langs = []
-        for track in subtitle_tracks:
-            lang = track.language if track.language else 'und'
-            if lang not in subtitle_langs:
-                subtitle_langs.append(lang)
-        subtitle_lang = ','.join(subtitle_langs) if subtitle_langs else 'und'
+        if subtitle_tracks:
+            subtitle_langs = []
+            for track in subtitle_tracks:
+                lang = track.language if track.language else 'und'
+                if lang not in subtitle_langs:
+                    subtitle_langs.append(lang)
+            subtitle_lang = ','.join(subtitle_langs)
+        else:
+            subtitle_lang = ''
 
         filesize_bytes = os.path.getsize(video_file)
         filesize_sort = filesize_bytes
