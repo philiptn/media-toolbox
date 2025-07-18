@@ -147,11 +147,11 @@ def main():
         for track in audio_tracks:
             lang = track.language or 'und'
             fmt_raw = (track.format or 'unknown').lower()
-            fmt_mapped = audio_format_map.get(fmt_raw, fmt_raw.upper())
-            entry = f"{lang}-{fmt_mapped}"
+            fmt_mapped = audio_format_map.get(fmt_raw, fmt_raw)
+            entry = f"{lang}_{fmt_mapped.lower()}"
             if entry not in audio_langs:
                 audio_langs.append(entry)
-        audio_lang = ', '.join(audio_langs) if audio_langs else 'und'
+        audio_lang = ' '.join(audio_langs) if audio_langs else 'und'
 
         subtitle_format_map = {
             'utf-8': 'srt',
@@ -166,9 +166,9 @@ def main():
                 lang = track.language or 'und'
                 fmt_raw = (track.format or 'unknown').lower()
                 fmt_mapped = subtitle_format_map.get(fmt_raw, fmt_raw)
-                entry = f"{lang}-{fmt_mapped.upper()}"
+                entry = f"{lang}_{fmt_mapped.lower()}"
                 subtitle_langs.append(entry)
-            subtitle_lang = ', '.join(subtitle_langs)
+            subtitle_lang = ' '.join(subtitle_langs)
         else:
             subtitle_lang = ''
 
