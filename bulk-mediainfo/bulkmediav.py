@@ -148,15 +148,22 @@ def main():
             lang = track.language or 'und'
             fmt_raw = (track.format or 'unknown').lower()
             fmt_mapped = audio_format_map.get(fmt_raw, fmt_raw)
-            entry = f"{lang}_{fmt_mapped.lower()}"
+            suffix = " (default)" if getattr(track, "default", "No") == "Yes" else ""
+            entry = f"{lang.lower()}-{fmt_mapped.upper()}{suffix}"
             if entry not in audio_langs:
                 audio_langs.append(entry)
-        audio_lang = ' '.join(audio_langs) if audio_langs else 'und'
+        audio_lang = ', '.join(audio_langs) if audio_langs else 'und'
 
         subtitle_format_map = {
             'utf-8': 'srt',
+            'subrip': 'srt',
             'pgs': 'sup',
-            'vobsub': 'sub'
+            'hdmv_pgs': 'sup',
+            'vobsub': 'sub',
+            'ass': 'ass',
+            'ssa': 'ssa',
+            'mov_text': 'movtxt',
+            'webvtt': 'vtt'
         }
 
         subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
@@ -165,10 +172,11 @@ def main():
             for track in subtitle_tracks:
                 lang = track.language or 'und'
                 fmt_raw = (track.format or 'unknown').lower()
-                fmt_mapped = subtitle_format_map.get(fmt_raw, fmt_raw)
-                entry = f"{lang}_{fmt_mapped.lower()}"
+                fmt_mapped = subtitle_format_map.get(fmt_raw, fmt_raw.lower())
+                suffix = " (default)" if getattr(track, "default", "No") == "Yes" else ""
+                entry = f"{lang.lower()}-{fmt_mapped.upper()}{suffix}"
                 subtitle_langs.append(entry)
-            subtitle_lang = ' '.join(subtitle_langs)
+            subtitle_lang = ', '.join(subtitle_langs)
         else:
             subtitle_lang = ''
 
