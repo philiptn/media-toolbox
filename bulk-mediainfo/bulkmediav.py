@@ -131,22 +131,44 @@ def main():
                     max_bitrate_display = 'N/A'
                 break
 
+        audio_format_map = {
+            'aac': 'AAC',
+            'ac-3': 'AC3',
+            'e-ac-3': 'EAC3',
+            'dts': 'DTS',
+            'truehd': 'THD',
+            'mp3': 'MP3',
+            'flac': 'FLAC',
+            'pcm': 'PCM'
+        }
+
         audio_tracks = [track for track in media_info.tracks if track.track_type == 'Audio']
         audio_langs = []
         for track in audio_tracks:
-            lang = track.language if track.language else 'und'
-            if lang not in audio_langs:
-                audio_langs.append(lang)
-        audio_lang = ','.join(audio_langs) if audio_langs else 'und'
+            lang = track.language or 'und'
+            fmt_raw = (track.format or 'unknown').lower()
+            fmt_mapped = audio_format_map.get(fmt_raw, fmt_raw.upper())
+            entry = f"{lang}-{fmt_mapped}"
+            if entry not in audio_langs:
+                audio_langs.append(entry)
+        audio_lang = ', '.join(audio_langs) if audio_langs else 'und'
+
+        subtitle_format_map = {
+            'utf-8': 'srt',
+            'pgs': 'sup',
+            'vobsub': 'sub'
+        }
 
         subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
         if subtitle_tracks:
             subtitle_langs = []
             for track in subtitle_tracks:
-                lang = track.language if track.language else 'und'
-                if lang not in subtitle_langs:
-                    subtitle_langs.append(lang)
-            subtitle_lang = ','.join(subtitle_langs)
+                lang = track.language or 'und'
+                fmt_raw = (track.format or 'unknown').lower()
+                fmt_mapped = subtitle_format_map.get(fmt_raw, fmt_raw)
+                entry = f"{lang}-{fmt_mapped.upper()}"
+                subtitle_langs.append(entry)
+            subtitle_lang = ', '.join(subtitle_langs)
         else:
             subtitle_lang = ''
 
