@@ -151,7 +151,12 @@ def main():
             suffix = " (default)" if getattr(track, "default", "No") == "Yes" else ""
             entry = f"{lang.lower()}-{fmt_mapped.upper()}{suffix}"
             audio_langs.append(entry)
-        audio_lang = ', '.join(audio_langs) if audio_langs else 'und'
+        if audio_langs:
+            audio_lang = ', '.join(audio_langs)
+        elif audio_tracks and not audio_langs:
+            audio_lang = 'und'
+        else:
+            audio_lang = ''
 
         subtitle_format_map = {
             'utf-8': 'srt',
