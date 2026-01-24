@@ -10,17 +10,20 @@ import threading
 
 def main():
     parser = argparse.ArgumentParser(description='Check video files in a folder and display metadata.')
-    parser.add_argument('folder', nargs='?', default='.', help='Path to the folder containing video files, defaults to current folder.')
-    parser.add_argument('-r', '--recursive', action='store_true', help='Recursively search subfolders for video files.')
+    parser.add_argument('folder', nargs='?', default='.', help='Path to the folder containing video files.')
+    parser.add_argument('-r', '--recursive', action='store_true', help='Recursively search subfolders.')
+    parser.add_argument('--simple', action='store_true',
+                        help='Show only filename, filesize, and duration.')
     parser.add_argument('--sort', choices=[
-        'filesize', 'codec', 'codec_profile', 'fps', 'interlace', 'aspect', 'resolution',
-        'avg_bitrate', 'max_bitrate', 'filename', 'audio', 'subtitles'
-    ], help='Column to sort the output by. Defaults to filename.')
-    parser.add_argument('--exclude', help='Comma-separated list of fields to exclude from output (e.g. audio,subtitles,fps).')
+        'filesize', 'codec', 'codec_profile', 'fps', 'interlace', 'aspect',
+        'resolution', 'avg_bitrate', 'max_bitrate', 'filename',
+        'audio', 'subtitles', 'duration'
+    ], help='Column to sort by. Defaults to filename.')
+    parser.add_argument('--exclude',
+                        help='Comma-separated list of fields to exclude.')
 
     args = parser.parse_args()
 
-    # Handle excluded fields
     exclude_fields = set()
     if args.exclude:
         exclude_map = {
@@ -30,6 +33,7 @@ def main():
             'codec': 'codec',
             'codec_profile': 'codec_profile',
             'filesize': 'filesize_display',
+            'duration': 'duration_display',
             'interlace': 'interlace',
             'aspect': 'aspect',
             'resolution': 'resolution',
@@ -47,33 +51,38 @@ def main():
 
     if args.recursive:
         for ext in video_extensions:
-            pattern = os.path.join(args.folder, '**', '*' + ext)
-            video_files.extend(glob.glob(pattern, recursive=True))
+            video_files.extend(
+                glob.glob(os.path.join(args.folder, '**', f'*{ext}'),
+                          recursive=True)
+            )
     else:
         for ext in video_extensions:
-            pattern = os.path.join(args.folder, '*' + ext)
-            video_files.extend(glob.glob(pattern))
+            video_files.extend(
+                glob.glob(os.path.join(args.folder, f'*{ext}'))
+            )
 
     if not video_files:
-        print("No video files found in the specified folder.")
+        print("No video files found.")
         return
 
     video_data_list = []
     total_files = len(video_files)
-
-    spinner_chars = ['|', '/', '-', '\\']
     spinner_running = True
+    spinner_chars = ['|', '/', '-', '\\']
+    current_file = 0
 
     print('\033[?25l', end='')
 
-    current_file = 0
-
     def spinner():
-        spinner_index = 0
+        i = 0
         while spinner_running:
-            progress_msg = f"Scanning file {current_file} of {total_files} {spinner_chars[spinner_index % len(spinner_chars)]}"
-            print(progress_msg, end='\r', flush=True)
-            spinner_index += 1
+            print(
+                f"Scanning file {current_file} of {total_files} "
+                f"{spinner_chars[i % 4]}",
+                end='\r',
+                flush=True
+            )
+            i += 1
             time.sleep(0.1)
 
     spinner_thread = threading.Thread(target=spinner)
@@ -83,122 +92,78 @@ def main():
         current_file = idx
         media_info = MediaInfo.parse(video_file)
 
-        codec = 'Unknown'
-        codec_profile = 'Unknown'
-        fps = 'Unknown'
-        field_order = 'Unknown'
-        aspect_ratio = 'Unknown'
-        resolution = 'Unknown'
-        avg_bitrate = 'Unknown'
-        max_bitrate = 'Unknown'
+        codec = codec_profile = fps = 'Unknown'
+        field_order = aspect_ratio = resolution = 'Unknown'
+        avg_bitrate = max_bitrate = None
+        duration_seconds = None
+        duration_display = 'Unknown'
 
         for track in media_info.tracks:
             if track.track_type == 'Video':
                 codec = track.codec_id or 'Unknown'
                 codec_profile = track.format_profile or 'Unknown'
                 fps = track.frame_rate or 'Unknown'
-                interlacing = track.scan_type or 'Unknown'
-                if interlacing in ('Interlaced', 'MBAFF'):
-                    field_order = track.scan_order or 'Unknown'
+
+                if track.scan_type in ('Interlaced', 'MBAFF'):
+                    field_order = track.scan_order or 'Interlaced'
                 else:
                     field_order = 'Progressive'
+
                 if track.display_aspect_ratio:
                     try:
-                        aspect_ratio_decimal = float(track.display_aspect_ratio)
-                        aspect_ratio_fraction = Fraction(aspect_ratio_decimal).limit_denominator(100)
-                        aspect_ratio = f"{aspect_ratio_fraction.numerator}:{aspect_ratio_fraction.denominator}"
+                        frac = Fraction(float(track.display_aspect_ratio)).limit_denominator(100)
+                        aspect_ratio = f"{frac.numerator}:{frac.denominator}"
                     except ValueError:
                         aspect_ratio = track.display_aspect_ratio
                 elif track.width and track.height:
-                    aspect_ratio_fraction = Fraction(track.width, track.height).limit_denominator(100)
-                    aspect_ratio = f"{aspect_ratio_fraction.numerator}:{aspect_ratio_fraction.denominator}"
+                    frac = Fraction(track.width, track.height).limit_denominator(100)
+                    aspect_ratio = f"{frac.numerator}:{frac.denominator}"
+
                 resolution = f"{track.width}x{track.height}" if track.width and track.height else 'Unknown'
-                avg_bitrate = track.bit_rate or 'Unknown'
-                max_bitrate = track.maximum_bit_rate or 'Unknown'
 
-                if avg_bitrate != 'Unknown':
-                    avg_bitrate_mbps = int(avg_bitrate) / 1_000_000
-                    avg_bitrate_display = f"{avg_bitrate_mbps:.2f} Mbps"
-                else:
-                    avg_bitrate_mbps = None
-                    avg_bitrate_display = 'Unknown'
+                if track.bit_rate:
+                    avg_bitrate = int(track.bit_rate) / 1_000_000
+                if track.maximum_bit_rate:
+                    max_bitrate = int(track.maximum_bit_rate) / 1_000_000
 
-                if max_bitrate != 'Unknown':
-                    max_bitrate_mbps = int(max_bitrate) / 1_000_000
-                    max_bitrate_display = f"{max_bitrate_mbps:.2f} Mbps"
-                else:
-                    max_bitrate_mbps = None
-                    max_bitrate_display = 'N/A'
+                if track.duration:
+                    try:
+                        duration_ms = float(track.duration)
+                        duration_seconds = int(duration_ms // 1000)
+                        h = duration_seconds // 3600
+                        m = (duration_seconds % 3600) // 60
+                        s = duration_seconds % 60
+                        duration_display = f"{h}:{m:02d}:{s:02d}"
+                    except (ValueError, TypeError):
+                        duration_seconds = None
+                        duration_display = 'Unknown'
+
                 break
 
-        audio_format_map = {
-            'aac': 'AAC',
-            'ac-3': 'AC3',
-            'e-ac-3': 'EAC3',
-            'dts': 'DTS',
-            'truehd': 'THD',
-            'mp3': 'MP3',
-            'flac': 'FLAC',
-            'pcm': 'PCM'
-        }
+        audio_tracks = [t for t in media_info.tracks if t.track_type == 'Audio']
+        audio_lang = ', '.join(
+            f"{(t.language or 'und').lower()}-{(t.format or '').upper()}"
+            for t in audio_tracks
+        )
 
-        audio_tracks = [track for track in media_info.tracks if track.track_type == 'Audio']
-        audio_langs = []
-        for track in audio_tracks:
-            lang = track.language or 'und'
-            fmt_raw = (track.format or 'unknown').lower()
-            fmt_mapped = audio_format_map.get(fmt_raw, fmt_raw)
-            suffix = " (default)" if getattr(track, "default", "No") == "Yes" else ""
-            entry = f"{lang.lower()}-{fmt_mapped.upper()}{suffix}"
-            audio_langs.append(entry)
-        if audio_langs:
-            audio_lang = ', '.join(audio_langs)
-        elif audio_tracks and not audio_langs:
-            audio_lang = 'und'
-        else:
-            audio_lang = ''
-
-        subtitle_format_map = {
-            'utf-8': 'srt',
-            'subrip': 'srt',
-            'pgs': 'sup',
-            'hdmv_pgs': 'sup',
-            'vobsub': 'sub',
-            'ass': 'ass',
-            'ssa': 'ssa',
-            'mov_text': 'movtxt',
-            'webvtt': 'vtt'
-        }
-
-        subtitle_tracks = [track for track in media_info.tracks if track.track_type == 'Text']
-        if subtitle_tracks:
-            subtitle_langs = []
-            for track in subtitle_tracks:
-                lang = track.language or 'und'
-                fmt_raw = (track.format or 'unknown').lower()
-                fmt_mapped = subtitle_format_map.get(fmt_raw, fmt_raw.lower())
-                suffix = " (default)" if getattr(track, "default", "No") == "Yes" else ""
-                entry = f"{lang.lower()}-{fmt_mapped.upper()}{suffix}"
-                subtitle_langs.append(entry)
-            subtitle_lang = ', '.join(subtitle_langs)
-        else:
-            subtitle_lang = ''
+        subtitle_tracks = [t for t in media_info.tracks if t.track_type == 'Text']
+        subtitle_lang = ', '.join(
+            f"{(t.language or 'und').lower()}-{(t.format or '').upper()}"
+            for t in subtitle_tracks
+        )
 
         filesize_bytes = os.path.getsize(video_file)
-        filesize_sort = filesize_bytes
         if filesize_bytes >= 1024 ** 3:
-            filesize_value = filesize_bytes / (1024 ** 3)
-            filesize_unit = 'GB'
+            filesize_display = f"{filesize_bytes / (1024 ** 3):.2f} GB"
         else:
-            filesize_value = filesize_bytes / (1024 ** 2)
-            filesize_unit = 'MB'
-        filesize_display = f"{filesize_value:.2f} {filesize_unit}"
+            filesize_display = f"{filesize_bytes / (1024 ** 2):.2f} MB"
 
-        filename = os.path.basename(video_file)
-
-        video_data = {
-            'filesize': filesize_sort,
+        video_data_list.append({
+            'filename': os.path.basename(video_file),
+            'filesize': filesize_bytes,
             'filesize_display': filesize_display,
+            'duration': duration_seconds,
+            'duration_display': duration_display,
             'codec': codec,
             'codec_profile': codec_profile,
             'fps': float(fps) if fps != 'Unknown' else None,
@@ -206,51 +171,56 @@ def main():
             'interlace': field_order,
             'aspect': aspect_ratio,
             'resolution': resolution,
-            'avg_bitrate': avg_bitrate_mbps,
-            'avg_bitrate_display': avg_bitrate_display,
-            'max_bitrate': max_bitrate_mbps,
-            'max_bitrate_display': max_bitrate_display,
+            'avg_bitrate': avg_bitrate,
+            'avg_bitrate_display': f"{avg_bitrate:.2f} Mbps" if avg_bitrate else 'Unknown',
+            'max_bitrate': max_bitrate,
+            'max_bitrate_display': f"{max_bitrate:.2f} Mbps" if max_bitrate else 'N/A',
             'audio_lang': audio_lang,
-            'subtitle_lang': subtitle_lang,
-            'filename': filename
-        }
-
-        video_data_list.append(video_data)
+            'subtitle_lang': subtitle_lang
+        })
 
     spinner_running = False
     spinner_thread.join()
     print('\033[?25h', end='')
-    print(' ' * 80, end='\r')
+    print(' ' * 200, end='\r')
 
     sort_key_map = {
         'filesize': 'filesize',
+        'duration': 'duration',
+        'avg_bitrate': 'avg_bitrate',
+        'max_bitrate': 'max_bitrate',
+        'fps': 'fps',
+        'filename': 'filename',
         'codec': 'codec',
         'codec_profile': 'codec_profile',
-        'fps': 'fps',
         'interlace': 'interlace',
         'aspect': 'aspect',
         'resolution': 'resolution',
-        'avg_bitrate': 'avg_bitrate',
-        'max_bitrate': 'max_bitrate',
-        'filename': 'filename',
         'audio': 'audio_lang',
         'subtitles': 'subtitle_lang'
     }
-    sort_key_arg = args.sort or 'filename'
-    sort_key = sort_key_map[sort_key_arg]
 
-    if sort_key in ['filesize', 'avg_bitrate', 'max_bitrate']:
-        descending = True
-    else:
-        descending = False
+    sort_key = sort_key_map.get(args.sort or 'filename')
+    reverse = sort_key in ('filesize', 'duration', 'avg_bitrate', 'max_bitrate')
 
-    if sort_key in ['filesize', 'avg_bitrate', 'max_bitrate', 'fps']:
-        video_data_list.sort(key=lambda x: x[sort_key] if x[sort_key] is not None else -1, reverse=descending)
-    else:
-        video_data_list.sort(key=lambda x: x[sort_key] or '', reverse=descending)
+    video_data_list.sort(
+        key=lambda x: x.get(sort_key) or 0,
+        reverse=reverse
+    )
+
+    if args.simple:
+        print()
+        print(f"{'Filename':<40}  {'Filesize':<12}  Duration")
+        print('-' * 70)
+        for v in video_data_list:
+            print(f"{v['filename']:<40}  {v['filesize_display']:<12}  {v['duration_display']}")
+        print()
+        return
 
     headers = {
+        'filename': 'Filename',
         'filesize_display': 'Filesize',
+        'duration_display': 'Duration',
         'codec': 'Codec',
         'codec_profile': 'Profile',
         'fps_display': 'FPS',
@@ -260,32 +230,23 @@ def main():
         'avg_bitrate_display': 'Avg Bitrate',
         'max_bitrate_display': 'Max Bitrate',
         'audio_lang': 'Audio',
-        'subtitle_lang': 'Subtitles',
-        'filename': 'Filename'
+        'subtitle_lang': 'Subtitles'
     }
 
     headers = {k: v for k, v in headers.items() if k not in exclude_fields}
 
-    column_widths = {key: len(value) for key, value in headers.items()}
-    for data in video_data_list:
-        for key in column_widths.keys():
-            value = str(data.get(key, ''))
-            column_widths[key] = max(column_widths[key], len(value))
-
-    format_string = ''
-    header_string = ''
-    for key in headers.keys():
-        width = column_widths[key] + 2
-        format_string += f"{{:<{width}}}"
-        header_string += f"{headers[key]:<{width}}"
+    col_widths = {
+        k: max(len(v), max(len(str(d.get(k, ''))) for d in video_data_list))
+        for k, v in headers.items()
+    }
 
     print()
-    print(header_string.strip())
-    print('-' * len(header_string.strip()))
+    header_line = '  '.join(f"{headers[k]:<{col_widths[k]}}" for k in headers)
+    print(header_line)
+    print('-' * len(header_line))
 
-    for data in video_data_list:
-        row_values = [str(data.get(key, '')) for key in headers.keys()]
-        print(format_string.format(*row_values).strip())
+    for d in video_data_list:
+        print('  '.join(f"{str(d.get(k,'')):<{col_widths[k]}}" for k in headers))
     print()
 
 
