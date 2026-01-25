@@ -209,11 +209,24 @@ def main():
     )
 
     if args.simple:
+        # compute column widths dynamically from data
+        name_w = max(len('Filename'), max(len(v['filename']) for v in video_data_list))
+        size_w = max(len('Filesize'), max(len(v['filesize_display']) for v in video_data_list))
+        dur_w  = max(len('Duration'), max(len(v['duration_display']) for v in video_data_list))
+
+        sep = '  '
+
         print()
-        print(f"{'Filename':<40}  {'Filesize':<12}  Duration")
-        print('-' * 70)
+        print(f"{'Filename':<{name_w}}{sep}{'Filesize':<{size_w}}{sep}Duration")
+        print('-' * (name_w + size_w + dur_w + len(sep) * 2))
+
         for v in video_data_list:
-            print(f"{v['filename']:<40}  {v['filesize_display']:<12}  {v['duration_display']}")
+            print(
+                f"{v['filename']:<{name_w}}{sep}"
+                f"{v['filesize_display']:<{size_w}}{sep}"
+                f"{v['duration_display']}"
+            )
+
         print()
         return
 
