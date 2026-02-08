@@ -6,6 +6,276 @@ import time
 from pymediainfo import MediaInfo
 from fractions import Fraction
 import threading
+import subprocess
+import json
+import numpy as np
+import multiprocessing as mp
+from tqdm import tqdm
+import signal
+import platform
+
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+ANALYZE_FRAMES = 120
+SEGMENT_POSITIONS = [0.1, 0.5, 0.9]
+
+LOW_MOTION = 1.2
+TRUE_INTERLACE_RATIO = 0.65
+PROGRESSIVE_RATIO = 0.9
+
+cpu_total = os.cpu_count() or 4
+workers = max(1, int(cpu_total * 0.4))
+
+
+def get_video_info_ffprobe(path):
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration",
+        "-of", "json", path
+    ]
+    data = json.loads(subprocess.check_output(cmd))
+    s = data["streams"][0]
+
+    w = int(s["width"])
+    h = int(s["height"])
+    dur = float(s.get("duration", 0) or 0)
+    if dur <= 0:
+        dur = 60
+
+    return w, h, dur
+
+
+def segment_ratio(path, w, h, start):
+    cmd = [
+        "ffmpeg",
+        "-ss", str(start),
+        "-i", path,
+        "-an",
+        "-vf", "format=gray",
+        "-frames:v", str(ANALYZE_FRAMES),
+        "-f", "rawvideo",
+        "-"
+    ]
+
+    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    size = w * h
+
+    prev_frame = None
+    prev_bottom = None
+    ratios = []
+    motions = []
+
+    for _ in range(ANALYZE_FRAMES):
+        raw = pipe.stdout.read(size)
+        if len(raw) < size:
+            break
+
+        f = np.frombuffer(raw, dtype=np.uint8).reshape((h, w))
+        top = f[0::2]
+        bottom = f[1::2]
+
+        if prev_frame is not None and prev_bottom is not None:
+            frame_diff = np.mean(np.abs(f.astype(np.int16) - prev_frame.astype(np.int16)))
+            field_diff = np.mean(np.abs(top.astype(np.int16) - prev_bottom.astype(np.int16)))
+
+            if frame_diff > 0:
+                ratios.append(field_diff / frame_diff)
+                motions.append(frame_diff)
+
+        prev_frame = f
+        prev_bottom = bottom
+
+    pipe.terminate()
+
+    if not ratios:
+        return None
+
+    return np.median(ratios), np.median(motions)
+
+
+def detect_motion_type(path):
+    try:
+        w, h, dur = get_video_info_ffprobe(path)
+    except:
+        return "analysis_failed"
+
+    results = []
+
+    for pos in SEGMENT_POSITIONS:
+        start = dur * pos
+        res = segment_ratio(path, w, h, start)
+        if res is None:
+            continue
+
+        ratio, motion = res
+
+        if motion < LOW_MOTION:
+            results.append("low_motion")
+        elif ratio < TRUE_INTERLACE_RATIO:
+            results.append("true_interlaced")
+        elif ratio > PROGRESSIVE_RATIO:
+            results.append("progressive")
+        else:
+            results.append("high_motion")
+
+    if not results:
+        return "analysis_failed"
+
+    # Highest-motion decision logic
+    # If ANY segment shows high motion → treat as 50/60
+    if "high_motion" in results:
+        return "50/60_motion"
+
+    # Otherwise if any true interlaced motion
+    if "true_interlaced" in results:
+        return "true_interlaced"
+
+    # Otherwise progressive / low
+    if "progressive" in results:
+        return "progressive"
+
+    if "low_motion" in results:
+        return "low_motion"
+
+    return "analysis_failed"
+
+
+def process_video(video_file):
+    media_info = MediaInfo.parse(video_file)
+
+    codec = codec_profile = fps = 'Unknown'
+    field_order = aspect_ratio = resolution = 'Unknown'
+    avg_bitrate = max_bitrate = None
+    duration_seconds = None
+    duration_display = 'Unknown'
+
+    # ---- Video track ----
+    for track in media_info.tracks:
+        if track.track_type == 'Video':
+            codec = track.codec_id or 'Unknown'
+            codec_profile = track.format_profile or 'Unknown'
+            fps = track.frame_rate or 'Unknown'
+
+            if track.scan_type in ('Interlaced', 'MBAFF'):
+                field_order = track.scan_order or 'Interlaced'
+            else:
+                field_order = 'Progressive'
+
+            if track.display_aspect_ratio:
+                try:
+                    frac = Fraction(float(track.display_aspect_ratio)).limit_denominator(100)
+                    aspect_ratio = f"{frac.numerator}:{frac.denominator}"
+                except ValueError:
+                    aspect_ratio = track.display_aspect_ratio
+            elif track.width and track.height:
+                frac = Fraction(track.width, track.height).limit_denominator(100)
+                aspect_ratio = f"{frac.numerator}:{frac.denominator}"
+
+            resolution = f"{track.width}x{track.height}" if track.width and track.height else 'Unknown'
+
+            if track.bit_rate:
+                avg_bitrate = int(track.bit_rate) / 1_000_000
+            if track.maximum_bit_rate:
+                max_bitrate = int(track.maximum_bit_rate) / 1_000_000
+
+            if track.duration:
+                try:
+                    duration_ms = float(track.duration)
+                    duration_seconds = int(duration_ms // 1000)
+                    h = duration_seconds // 3600
+                    m = (duration_seconds % 3600) // 60
+                    s = duration_seconds % 60
+                    duration_display = f"{h}:{m:02d}:{s:02d}"
+                except (ValueError, TypeError):
+                    duration_seconds = None
+                    duration_display = 'Unknown'
+            break
+
+    # ---- Motion / Deinterlace ----
+    deint_fps_value = None
+    deint_fps_display = 'Unknown'
+
+    try:
+        fps_value = float(fps)
+    except:
+        fps_value = None
+
+    if fps_value:
+        if field_order != 'Progressive':
+            motion_type = detect_motion_type(video_file)
+
+            if motion_type == "50/60_motion":
+                deint_fps_value = fps_value * 2
+            elif motion_type in ("true_interlaced", "low_motion", "progressive"):
+                deint_fps_value = fps_value
+            if motion_type == "50/60_motion":
+                deint_fps_value = fps_value * 2
+            elif motion_type in ("true_interlaced", "low_motion", "progressive"):
+                deint_fps_value = fps_value
+        else:
+            deint_fps_value = fps_value
+    effective_fps = deint_fps_value if deint_fps_value is not None else fps_value
+    fps_display_value = str(fps)
+
+    if fps_value is not None and field_order != 'Progressive':
+        orig = f"{fps_value:.3f}".rstrip('0').rstrip('.')
+        if deint_fps_value is not None:
+            deint = f"{deint_fps_value:.3f}".rstrip('0').rstrip('.')
+            fps_display_value = f"{orig}➔{deint}"
+        elif deint_fps_display == "Mixed":
+            fps_display_value = f"{orig}➔Mixed"
+
+    # ---- Audio ----
+    audio_tracks = [t for t in media_info.tracks if t.track_type == 'Audio']
+    audio_items = []
+    for t in audio_tracks:
+        lang = (t.language or 'und').lower()
+        fmt = (t.format or '').upper()
+        default = '*' if getattr(t, 'default', None) == 'Yes' else ''
+        audio_items.append(f"{lang}-{fmt}{default}")
+
+    audio_lang = ', '.join(audio_items)
+
+    # ---- Subtitles ----
+    subtitle_tracks = [t for t in media_info.tracks if t.track_type == 'Text']
+    subtitle_items = []
+    for t in subtitle_tracks:
+        lang = (t.language or 'und').lower()
+        fmt = (t.format or '').upper()
+        default = '*' if getattr(t, 'default', None) == 'Yes' else ''
+        subtitle_items.append(f"{lang}-{fmt}{default}")
+
+    subtitle_lang = ', '.join(subtitle_items)
+
+    # ---- Filesize ----
+    filesize_bytes = os.path.getsize(video_file)
+    if filesize_bytes >= 1024 ** 3:
+        filesize_display = f"{filesize_bytes / (1024 ** 3):.2f} GB"
+    else:
+        filesize_display = f"{filesize_bytes / (1024 ** 2):.2f} MB"
+
+    return {
+        'filename': os.path.basename(video_file),
+        'filesize': filesize_bytes,
+        'filesize_display': filesize_display,
+        'duration': duration_seconds,
+        'duration_display': duration_display,
+        'codec': codec,
+        'codec_profile': codec_profile,
+        'fps': effective_fps,
+        'fps_display': fps_display_value,
+        'interlace': field_order,
+        'aspect': aspect_ratio,
+        'resolution': resolution,
+        'avg_bitrate': avg_bitrate,
+        'avg_bitrate_display': f"{avg_bitrate:.2f} Mbps" if avg_bitrate else 'Unknown',
+        'max_bitrate': max_bitrate,
+        'max_bitrate_display': f"{max_bitrate:.2f} Mbps" if max_bitrate else 'N/A',
+        'audio_lang': audio_lang,
+        'subtitle_lang': subtitle_lang
+    }
 
 
 def main():
@@ -66,123 +336,25 @@ def main():
         return
 
     video_data_list = []
-    total_files = len(video_files)
-    spinner_running = True
-    spinner_chars = ['|', '/', '-', '\\']
-    current_file = 0
-
-    print('\033[?25l', end='')
-
-    def spinner():
-        i = 0
-        while spinner_running:
-            print(
-                f"Scanning file {current_file} of {total_files} "
-                f"{spinner_chars[i % 4]}",
-                end='\r',
-                flush=True
-            )
-            i += 1
-            time.sleep(0.1)
-
-    spinner_thread = threading.Thread(target=spinner)
-    spinner_thread.start()
-
-    for idx, video_file in enumerate(video_files, start=1):
-        current_file = idx
-        media_info = MediaInfo.parse(video_file)
-
-        codec = codec_profile = fps = 'Unknown'
-        field_order = aspect_ratio = resolution = 'Unknown'
-        avg_bitrate = max_bitrate = None
-        duration_seconds = None
-        duration_display = 'Unknown'
-
-        for track in media_info.tracks:
-            if track.track_type == 'Video':
-                codec = track.codec_id or 'Unknown'
-                codec_profile = track.format_profile or 'Unknown'
-                fps = track.frame_rate or 'Unknown'
-
-                if track.scan_type in ('Interlaced', 'MBAFF'):
-                    field_order = track.scan_order or 'Interlaced'
-                else:
-                    field_order = 'Progressive'
-
-                if track.display_aspect_ratio:
-                    try:
-                        frac = Fraction(float(track.display_aspect_ratio)).limit_denominator(100)
-                        aspect_ratio = f"{frac.numerator}:{frac.denominator}"
-                    except ValueError:
-                        aspect_ratio = track.display_aspect_ratio
-                elif track.width and track.height:
-                    frac = Fraction(track.width, track.height).limit_denominator(100)
-                    aspect_ratio = f"{frac.numerator}:{frac.denominator}"
-
-                resolution = f"{track.width}x{track.height}" if track.width and track.height else 'Unknown'
-
-                if track.bit_rate:
-                    avg_bitrate = int(track.bit_rate) / 1_000_000
-                if track.maximum_bit_rate:
-                    max_bitrate = int(track.maximum_bit_rate) / 1_000_000
-
-                if track.duration:
-                    try:
-                        duration_ms = float(track.duration)
-                        duration_seconds = int(duration_ms // 1000)
-                        h = duration_seconds // 3600
-                        m = (duration_seconds % 3600) // 60
-                        s = duration_seconds % 60
-                        duration_display = f"{h}:{m:02d}:{s:02d}"
-                    except (ValueError, TypeError):
-                        duration_seconds = None
-                        duration_display = 'Unknown'
-
-                break
-
-        audio_tracks = [t for t in media_info.tracks if t.track_type == 'Audio']
-        audio_lang = ', '.join(
-            f"{(t.language or 'und').lower()}-{(t.format or '').upper()}"
-            for t in audio_tracks
+    with mp.Pool(workers) as pool:
+        pbar = tqdm(
+            pool.imap_unordered(process_video, video_files),
+            total=len(video_files),
+            desc="Analyzing",
+            unit="file",
+            ncols=35,
+            leave=False,
+            bar_format="{desc}{percentage:3.0f}% {bar} {n_fmt}/{total_fmt} "
         )
+        for result in pbar:
+            video_data_list.append(result)
 
-        subtitle_tracks = [t for t in media_info.tracks if t.track_type == 'Text']
-        subtitle_lang = ', '.join(
-            f"{(t.language or 'und').lower()}-{(t.format or '').upper()}"
-            for t in subtitle_tracks
-        )
-
-        filesize_bytes = os.path.getsize(video_file)
-        if filesize_bytes >= 1024 ** 3:
-            filesize_display = f"{filesize_bytes / (1024 ** 3):.2f} GB"
-        else:
-            filesize_display = f"{filesize_bytes / (1024 ** 2):.2f} MB"
-
-        video_data_list.append({
-            'filename': os.path.basename(video_file),
-            'filesize': filesize_bytes,
-            'filesize_display': filesize_display,
-            'duration': duration_seconds,
-            'duration_display': duration_display,
-            'codec': codec,
-            'codec_profile': codec_profile,
-            'fps': float(fps) if fps != 'Unknown' else None,
-            'fps_display': str(fps),
-            'interlace': field_order,
-            'aspect': aspect_ratio,
-            'resolution': resolution,
-            'avg_bitrate': avg_bitrate,
-            'avg_bitrate_display': f"{avg_bitrate:.2f} Mbps" if avg_bitrate else 'Unknown',
-            'max_bitrate': max_bitrate,
-            'max_bitrate_display': f"{max_bitrate:.2f} Mbps" if max_bitrate else 'N/A',
-            'audio_lang': audio_lang,
-            'subtitle_lang': subtitle_lang
-        })
-
-    spinner_running = False
-    spinner_thread.join()
-    print('\033[?25h', end='')
-    print(' ' * 200, end='\r')
+        pbar.close()
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    # Hard terminal reset on Linux / WSL
+    if platform.system() == "Linux":
+        os.system("reset")
 
     sort_key_map = {
         'filesize': 'filesize',
@@ -201,7 +373,7 @@ def main():
     }
 
     sort_key = sort_key_map.get(args.sort or 'filename')
-    reverse = sort_key in ('filesize', 'duration', 'avg_bitrate', 'max_bitrate')
+    reverse = sort_key in ('filesize', 'duration', 'avg_bitrate', 'max_bitrate', 'fps')
 
     video_data_list.sort(
         key=lambda x: x.get(sort_key) or 0,
