@@ -1,0 +1,2 @@
+# No Python dependencies required.
+# Runtime dependency: ffmpeg (must be installed system-wide)
