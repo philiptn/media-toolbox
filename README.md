@@ -5,7 +5,7 @@ A collection of various media processing tools/scripts/programs that I use.
 A custom media encoder written in Python. Video encoding is performed by FFmpeg, with HandBrakeCLI used for auto-cropping and mkvmerge for repacking the media. Supports various video formats, with optimized encoding parameters such as extended b-frames, rc-lookahead and more.
 
 ### media-matcher
-Matches remuxed media files to finished files by comparing audio fingerprints, then renames the remuxed files to match the finished ones.
+Matches remuxed media files to finished files by comparing audio and video fingerprints, then renames the remuxed files to match the finished ones.
 
 ### [bulk-mediainfo](https://github.com/philiptn/media-toolbox/blob/main/bulk-mediainfo/README.md)
 Two small utilities that display useful information in MKV files.  

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Media File Matcher & Renamer
-Matches remuxed media files to finished files by comparing audio fingerprints,
-then renames the remuxed files to match the finished ones.
+Matches remuxed media files to finished files by comparing audio and visual
+fingerprints, then renames the remuxed files to match the finished ones.
 """
 
 import math
@@ -17,8 +17,8 @@ from pathlib import Path
 # ── Config ───────────────────────────────────────────────────────────────────
 
 MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m2ts", ".ts", ".mpg", ".mpeg", ".wmv", ".flv", ".webm"}
-# Fractions of the file duration at which to sample audio (e.g. 0.25 = 25% through).
-SAMPLE_FRACTIONS = [0.25, 0.50, 0.75]
+# Fractions of the file duration at which to sample (shared by audio and video).
+SAMPLE_FRACTIONS = [0.15, 0.30, 0.50, 0.70, 0.85]
 # Seconds of audio to extract per sample point.
 AUDIO_CLIP_SECS = 3
 # Number of RMS energy windows per clip — forms the fingerprint vector.
@@ -30,8 +30,16 @@ MAX_AUDIO_STREAMS = 4
 DURATION_TOLERANCE_SECS = 120
 # Cosine similarity threshold for one sample clip to count as a match (0–1).
 SIMILARITY_THRESHOLD = 0.85
-# Minimum number of sample clips that must match to accept two files as the same content.
-MIN_SAMPLE_MATCHES = 2
+# dHash grid dimensions: WIDTH columns x HEIGHT rows → (WIDTH-1)*HEIGHT = 64 bits.
+DHASH_WIDTH = 9
+DHASH_HEIGHT = 8
+# Center-crop fraction applied before hashing to strip letterboxing (0.8 = keep central 80%).
+FRAME_CROP_FRACTION = 0.8
+# Maximum Hamming distance (out of 64 bits) for a frame pair to count as a visual match.
+FRAME_MATCH_THRESHOLD = 10
+# Minimum combined score (audio points + video points) to accept a match.
+# Each sample point can contribute up to 2 points (1 audio + 1 video). Max = 2 * len(SAMPLE_FRACTIONS).
+MIN_COMBINED_SCORE = 4
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -113,6 +121,61 @@ def extract_audio_clip(filepath: str, timestamp: float,
         return None, str(e)
 
 
+def extract_video_frame_hash(filepath: str, timestamp: float) -> int | None:
+    """
+    Extract a single video frame at `timestamp`, downscale to a tiny grayscale grid,
+    and return a 64-bit dHash (difference hash). Returns None on failure.
+
+    The frame is center-cropped by FRAME_CROP_FRACTION to strip letterboxing, then
+    scaled to DHASH_WIDTH x DHASH_HEIGHT. Adjacent pixels are compared left-to-right
+    to produce a binary hash that is robust to re-encoding, resolution, and color changes.
+    """
+    try:
+        crop = FRAME_CROP_FRACTION
+        vf = f"crop=iw*{crop}:ih*{crop},scale={DHASH_WIDTH}:{DHASH_HEIGHT}"
+        cmd = ["ffmpeg", "-y",
+               "-ss", str(timestamp), "-i", filepath,
+               "-vframes", "1",
+               "-vf", vf,
+               "-pix_fmt", "gray",
+               "-f", "rawvideo",
+               "-"]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        data = result.stdout
+        expected = DHASH_WIDTH * DHASH_HEIGHT
+        if len(data) < expected:
+            return None
+        bits = 0
+        for row in range(DHASH_HEIGHT):
+            for col in range(DHASH_WIDTH - 1):
+                idx = row * DHASH_WIDTH + col
+                if data[idx] > data[idx + 1]:
+                    bits |= 1 << (row * (DHASH_WIDTH - 1) + col)
+        return bits
+    except Exception:
+        return None
+
+
+def hamming_distance(a: int, b: int) -> int:
+    """Count differing bits between two integers."""
+    return bin(a ^ b).count('1')
+
+
+def compute_video_hashes(filepath: Path, duration: float,
+                         label: str = "") -> list[int | None]:
+    """Extract a dHash at each SAMPLE_FRACTIONS position; return one hash per fraction."""
+    hashes: list[int | None] = []
+    for frac in SAMPLE_FRACTIONS:
+        ts = duration * frac
+        h = extract_video_frame_hash(str(filepath), ts)
+        hashes.append(h)
+    if label:
+        ok = sum(1 for h in hashes if h is not None)
+        status = f"{GREEN}OK{RESET} ({ok}/{len(hashes)} frames)" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {DIM}[{status}{DIM}]{RESET} {label}")
+    return hashes
+
+
 def audio_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two normalised RMS-envelope vectors."""
     n = min(len(a), len(b))
@@ -153,7 +216,7 @@ def main():
     print(f"\n{BOLD}{'═' * 60}{RESET}")
     print(f"{BOLD}  Media File Matcher & Renamer{RESET}")
     print(f"{BOLD}{'═' * 60}{RESET}")
-    print(f"{DIM}  Matches remuxed files to finished files via audio fingerprint{RESET}")
+    print(f"{DIM}  Matches remuxed files to finished files via audio + visual fingerprint{RESET}")
     print(f"{DIM}  Drag & drop folders into the terminal when prompted{RESET}\n")
 
     # ── Get paths ────────────────────────────────────────────────────────
@@ -224,35 +287,46 @@ def main():
         cand_word = "candidate" if len(cands) == 1 else "candidates"
         print(f"  {DIM}{fin_path.name}:{RESET} {CYAN}{len(cands)}{RESET} {cand_word}")
 
-    # ── Fingerprint finished files ────────────────────────────────────────
-    print(f"\n{BOLD}Fingerprinting finished files...{RESET}")
-    finished_fps: dict[Path, list] = {}
+    # ── Fingerprint finished files (audio + video) ─────────────────────────
+    print(f"\n{BOLD}Fingerprinting finished files (audio)...{RESET}")
+    finished_audio: dict[Path, list] = {}
     for f in finished_files:
         dur = finished_durations[f]
         if dur is None:
             print(f"  {RED}SKIP{RESET} {f.name} — duration unknown")
-            finished_fps[f] = []
+            finished_audio[f] = []
         else:
-            finished_fps[f] = compute_fingerprints(f, dur, f.name)
+            finished_audio[f] = compute_fingerprints(f, dur, f.name)
 
-    # ── Verify: fingerprint only duration-filtered candidates ─────────────
-    print(f"\n{BOLD}Verifying candidates by audio fingerprint...{RESET}")
-    matches = []
-    # cache: file → list of per-stream fingerprint lists
-    rem_fps_cache: dict[Path, list[list]] = {}
+    print(f"\n{BOLD}Fingerprinting finished files (video)...{RESET}")
+    finished_video: dict[Path, list[int | None]] = {}
+    for f in finished_files:
+        dur = finished_durations[f]
+        if dur is None:
+            finished_video[f] = []
+        else:
+            finished_video[f] = compute_video_hashes(f, dur, f.name)
+
+    # ── Verify: fingerprint candidates and score with combined matching ───
+    print(f"\n{BOLD}Verifying candidates by audio + visual fingerprint...{RESET}")
+    matches: list[tuple[Path, Path, int, int, int, float]] = []  # (fin, rem, score, audio_pts, video_pts, avg_sim)
+    # cache: file → (audio_streams, video_hashes)
+    rem_cache: dict[Path, tuple[list[list], list[int | None]]] = {}
 
     for fin_path in finished_files:
-        fin_fps = finished_fps[fin_path]
-        has_audio = any(fp is not None for fp in fin_fps)
+        fin_afps = finished_audio[fin_path]
+        fin_vhashes = finished_video.get(fin_path, [])
+        has_audio = any(fp is not None for fp in fin_afps)
+        has_video = any(h is not None for h in fin_vhashes)
 
-        if not has_audio:
-            # No audio — fall back to closest duration match
+        if not has_audio and not has_video:
+            # No fingerprints at all — fall back to closest duration match
             cands = candidates_for[fin_path]
             if cands:
-                matches.append((fin_path, cands[0], 0, 0.0))
-                print(f"  {YELLOW}!{RESET} {fin_path.name} — no audio, using closest duration match")
+                matches.append((fin_path, cands[0], 0, 0, 0, 0.0))
+                print(f"  {YELLOW}!{RESET} {fin_path.name} — no fingerprints, using closest duration match")
             else:
-                print(f"  {RED}SKIP{RESET} {fin_path.name} — no audio and no duration candidates")
+                print(f"  {RED}SKIP{RESET} {fin_path.name} — no fingerprints and no duration candidates")
             continue
 
         best_match = None
@@ -263,8 +337,8 @@ def main():
             if rem_dur is None:
                 continue
 
-            if rem_file not in rem_fps_cache:
-                # Fingerprint each audio stream until one yields nothing
+            if rem_file not in rem_cache:
+                # Audio: fingerprint each stream until one yields nothing
                 all_streams: list[list] = []
                 for si in range(MAX_AUDIO_STREAMS):
                     fps = compute_fingerprints(rem_file, rem_dur, stream_idx=si)
@@ -275,37 +349,72 @@ def main():
                 best_clips = max((sum(1 for fp in s if fp is not None)
                                   for s in all_streams), default=0)
                 stream_word = "stream" if n_streams == 1 else "streams"
-                status = (f"{GREEN}OK{RESET} ({best_clips}/{len(SAMPLE_FRACTIONS)} clips"
-                          f", {n_streams} {stream_word})" if n_streams else f"{RED}FAIL{RESET}")
+                a_status = (f"{best_clips}/{len(SAMPLE_FRACTIONS)} clips"
+                            f", {n_streams} {stream_word}" if n_streams else "no audio")
+
+                # Video: single stream, compute once
+                vhashes = compute_video_hashes(rem_file, rem_dur)
+                v_ok = sum(1 for h in vhashes if h is not None)
+                v_status = f"{v_ok}/{len(SAMPLE_FRACTIONS)} frames"
+
+                status = f"{GREEN}OK{RESET} ({a_status} | {v_status})" if (n_streams or v_ok) else f"{RED}FAIL{RESET}"
                 print(f"  {DIM}[{status}{DIM}]{RESET} {rem_file.name}")
-                rem_fps_cache[rem_file] = all_streams
+                rem_cache[rem_file] = (all_streams, vhashes)
 
-            # Find best similarity across all streams
-            for rem_fps in rem_fps_cache[rem_file]:
-                matched = 0
-                total_sim = 0.0
-                for fin_fp, rem_fp in zip(fin_fps, rem_fps):
-                    if fin_fp is None or rem_fp is None:
-                        continue
-                    sim = audio_similarity(fin_fp, rem_fp)
-                    if sim >= SIMILARITY_THRESHOLD:
-                        matched += 1
-                        total_sim += sim
+            rem_audio_streams, rem_vhashes = rem_cache[rem_file]
 
-                if matched >= MIN_SAMPLE_MATCHES:
-                    avg_sim = total_sim / matched
-                    score = (matched, avg_sim)
+            # Try each audio stream, combine with video for scoring
+            audio_stream_list = rem_audio_streams if rem_audio_streams else [[None] * len(SAMPLE_FRACTIONS)]
+            for rem_afps in audio_stream_list:
+                combined = 0
+                audio_pts = 0
+                video_pts = 0
+                audio_sim_total = 0.0
+                audio_match_count = 0
+
+                for i in range(len(SAMPLE_FRACTIONS)):
+                    # Audio point
+                    fin_afp = fin_afps[i] if i < len(fin_afps) else None
+                    rem_afp = rem_afps[i] if i < len(rem_afps) else None
+                    if fin_afp is not None and rem_afp is not None:
+                        sim = audio_similarity(fin_afp, rem_afp)
+                        if sim >= SIMILARITY_THRESHOLD:
+                            combined += 1
+                            audio_pts += 1
+                            audio_sim_total += sim
+                            audio_match_count += 1
+
+                    # Video point
+                    fin_vh = fin_vhashes[i] if i < len(fin_vhashes) else None
+                    rem_vh = rem_vhashes[i] if i < len(rem_vhashes) else None
+                    if fin_vh is not None and rem_vh is not None:
+                        if hamming_distance(fin_vh, rem_vh) <= FRAME_MATCH_THRESHOLD:
+                            combined += 1
+                            video_pts += 1
+
+                if combined >= MIN_COMBINED_SCORE:
+                    avg_sim = audio_sim_total / audio_match_count if audio_match_count else 0.0
+                    score = (combined, avg_sim)
                     if score > best_score:
                         best_score = score
-                        best_match = (fin_path, rem_file, matched, avg_sim)
+                        best_match = (fin_path, rem_file, combined, audio_pts, video_pts, avg_sim)
 
         if best_match:
             matches.append(best_match)
 
+    # Deduplicate: if the same remuxed file matched multiple finished files, keep best
+    seen_remuxed: dict[Path, tuple] = {}
+    for match in matches:
+        _, rem_path, combined_score, _, _, avg_sim = match
+        prev = seen_remuxed.get(rem_path)
+        if prev is None or (combined_score, avg_sim) > (prev[2], prev[5]):
+            seen_remuxed[rem_path] = match
+    matches = list(seen_remuxed.values())
+
     if not matches:
         print(f"\n{RED}No matches found.{RESET} Possible causes:")
         print(f"  - Files are different content")
-        print(f"  - Audio tracks are missing or completely different between versions")
+        print(f"  - Audio/video tracks missing or completely different between versions")
         print(f"  - Duration filter excluded true matches (try raising DURATION_TOLERANCE_SECS)")
         sys.exit(1)
 
@@ -314,8 +423,9 @@ def main():
     print(f"{BOLD}  Proposed renames ({len(matches)} matches){RESET}")
     print(f"{BOLD}{'─' * 60}{RESET}\n")
 
+    max_score = 2 * len(SAMPLE_FRACTIONS)
     renames = []
-    for fin_path, rem_path, matched_n, avg_sim in matches:
+    for fin_path, rem_path, combined_score, audio_pts, video_pts, avg_sim in matches:
         new_name = fin_path.stem + rem_path.suffix
         new_path = rem_path.parent / new_name
 
@@ -323,10 +433,11 @@ def main():
         tag = f" {RED}[CONFLICT]{RESET}" if conflict else ""
 
         print(f"  {rem_path.name}")
-        if matched_n == 0:
+        if combined_score == 0:
             print(f"  {YELLOW}→ {new_name}{RESET}  {DIM}(duration match only — verify manually){RESET}{tag}")
         else:
-            print(f"  {GREEN}→ {new_name}{RESET}  {DIM}({matched_n}/{len(SAMPLE_FRACTIONS)} clips matched, avg similarity {avg_sim:.1%}){RESET}{tag}")
+            sim_str = f", avg sim {avg_sim:.1%}" if audio_pts else ""
+            print(f"  {GREEN}→ {new_name}{RESET}  {DIM}(score {combined_score}/{max_score}: {audio_pts}a+{video_pts}v{sim_str}){RESET}{tag}")
         print()
 
         if not conflict:
