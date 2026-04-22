@@ -19,6 +19,9 @@ from pathlib import Path
 MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m2ts", ".ts", ".mpg", ".mpeg", ".wmv", ".flv", ".webm"}
 # Fractions of the file duration at which to sample (shared by audio and video).
 SAMPLE_FRACTIONS = [0.15, 0.30, 0.50, 0.70, 0.85]
+# Weight per sample — middle is most discriminating, ends often overlap (intro/credits
+# are shared across episodes of the same show, so a match there is weak evidence).
+SAMPLE_WEIGHTS = [1, 2, 3, 2, 1]
 # Seconds of audio to extract per sample point.
 AUDIO_CLIP_SECS = 3
 # Number of RMS energy windows per clip — forms the fingerprint vector.
@@ -33,13 +36,25 @@ SIMILARITY_THRESHOLD = 0.85
 # dHash grid dimensions: WIDTH columns x HEIGHT rows → (WIDTH-1)*HEIGHT = 64 bits.
 DHASH_WIDTH = 9
 DHASH_HEIGHT = 8
-# Center-crop fraction applied before hashing to strip letterboxing (0.8 = keep central 80%).
-FRAME_CROP_FRACTION = 0.8
+# Center-crop applied before hashing. A square region sized as this fraction
+# of the frame *height*, centered. Using height (not width) makes the hash
+# robust to horizontal crop differences between versions — e.g. a 1436x1080
+# 4:3 finished file and a 1920x1080 16:9 remux of the same content will both
+# sample the identical central square.
+FRAME_CROP_FRACTION = 0.35
 # Maximum Hamming distance (out of 64 bits) for a frame pair to count as a visual match.
-FRAME_MATCH_THRESHOLD = 10
+# Re-encoding (HEVC psy-rd, aq-mode, intra-smoothing) can flip a lot of bits even on
+# identical content, so we're fairly permissive here.
+FRAME_MATCH_THRESHOLD = 14
 # Minimum combined score (audio points + video points) to accept a match.
-# Each sample point can contribute up to 2 points (1 audio + 1 video). Max = 2 * len(SAMPLE_FRACTIONS).
-MIN_COMBINED_SCORE = 4
+# Each sample point contributes up to 2 * weight (audio + video). Max = 2 * sum(SAMPLE_WEIGHTS) = 18.
+# With weights [1,2,3,2,1], a pure intro+outro match scores only 4 (below threshold),
+# while a middle sample matching in both modalities scores 6 (passes).
+MIN_COMBINED_SCORE = 5
+# Strong-audio fallback: accept a match on audio alone if audio score is high enough.
+# With weights [1,2,3,2,1], audio-only score of 6 requires at least middle + one neighbor
+# to match (3+2=5 isn't enough, but 3+2+1=6 or 2+3+2=7 is). Intro+outro only = 2 (fails).
+MIN_AUDIO_ONLY_SCORE = 6
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -132,7 +147,10 @@ def extract_video_frame_hash(filepath: str, timestamp: float) -> int | None:
     """
     try:
         crop = FRAME_CROP_FRACTION
-        vf = f"crop=iw*{crop}:ih*{crop},scale={DHASH_WIDTH}:{DHASH_HEIGHT}"
+        # Square crop sized by height — robust to horizontal crop differences
+        # between versions (e.g. a 1436x1080 4:3 finished file vs a 1920x1080
+        # 16:9 remux of the same content). Both sample the same central square.
+        vf = f"crop=ih*{crop}:ih*{crop},scale={DHASH_WIDTH}:{DHASH_HEIGHT}"
         cmd = ["ffmpeg", "-y",
                "-ss", str(timestamp), "-i", filepath,
                "-vframes", "1",
@@ -322,6 +340,14 @@ def main():
             matches: list[tuple[Path, Path, int, int, int, float]] = []
             rem_cache: dict[Path, tuple[list[list], list[int | None]]] = {}
 
+            # Collect every passing (fin, rem) pair so we can do greedy bipartite
+            # assignment instead of per-finished "take your best" + dedupe (which
+            # silently drops matches when multiple finished files claim the same remux).
+            all_passing: list[tuple[int, float, Path, Path, int, int]] = []
+            # Track best attempt per finished (passing or below-threshold) for diagnostics
+            top_per_fin: dict[Path, tuple[int, float, Path, int, int, bool]] = {}
+            max_combined = 2 * sum(SAMPLE_WEIGHTS)
+
             for fin_path in finished_files:
                 fin_afps = finished_audio[fin_path]
                 fin_vhashes = finished_video.get(fin_path, [])
@@ -336,9 +362,6 @@ def main():
                     else:
                         print(f"  {RED}SKIP{RESET} {fin_path.name} — no fingerprints and no duration candidates")
                     continue
-
-                best_match = None
-                best_score = (-1, 0.0)
 
                 for rem_file in candidates_for[fin_path]:
                     rem_dur = remuxed_durations.get(rem_file)
@@ -370,6 +393,12 @@ def main():
                     rem_audio_streams, rem_vhashes = rem_cache[rem_file]
 
                     audio_stream_list = rem_audio_streams if rem_audio_streams else [[None] * len(SAMPLE_FRACTIONS)]
+                    # Per (fin, rem) pair, pick the best-scoring audio stream
+                    pair_combined = -1
+                    pair_audio_pts = 0
+                    pair_video_pts = 0
+                    pair_sim = 0.0
+
                     for rem_afps in audio_stream_list:
                         combined = 0
                         audio_pts = 0
@@ -378,13 +407,14 @@ def main():
                         audio_match_count = 0
 
                         for i in range(len(SAMPLE_FRACTIONS)):
+                            w = SAMPLE_WEIGHTS[i]
                             fin_afp = fin_afps[i] if i < len(fin_afps) else None
                             rem_afp = rem_afps[i] if i < len(rem_afps) else None
                             if fin_afp is not None and rem_afp is not None:
                                 sim = audio_similarity(fin_afp, rem_afp)
                                 if sim >= SIMILARITY_THRESHOLD:
-                                    combined += 1
-                                    audio_pts += 1
+                                    combined += w
+                                    audio_pts += w
                                     audio_sim_total += sim
                                     audio_match_count += 1
 
@@ -392,27 +422,56 @@ def main():
                             rem_vh = rem_vhashes[i] if i < len(rem_vhashes) else None
                             if fin_vh is not None and rem_vh is not None:
                                 if hamming_distance(fin_vh, rem_vh) <= FRAME_MATCH_THRESHOLD:
-                                    combined += 1
-                                    video_pts += 1
+                                    combined += w
+                                    video_pts += w
 
-                        if combined >= MIN_COMBINED_SCORE:
-                            avg_sim = audio_sim_total / audio_match_count if audio_match_count else 0.0
-                            score = (combined, avg_sim)
-                            if score > best_score:
-                                best_score = score
-                                best_match = (fin_path, rem_file, combined, audio_pts, video_pts, avg_sim)
+                        avg_sim = audio_sim_total / audio_match_count if audio_match_count else 0.0
+                        if (combined, avg_sim) > (pair_combined, pair_sim):
+                            pair_combined = combined
+                            pair_audio_pts = audio_pts
+                            pair_video_pts = video_pts
+                            pair_sim = avg_sim
 
-                if best_match:
-                    matches.append(best_match)
+                    if pair_combined < 0:
+                        continue
 
-            # Deduplicate: if the same remuxed file matched multiple finished files, keep best
-            seen_remuxed: dict[Path, tuple] = {}
-            for match in matches:
-                _, rem_path, combined_score, _, _, avg_sim = match
-                prev = seen_remuxed.get(rem_path)
-                if prev is None or (combined_score, avg_sim) > (prev[2], prev[5]):
-                    seen_remuxed[rem_path] = match
-            matches = list(seen_remuxed.values())
+                    passes = (pair_combined >= MIN_COMBINED_SCORE
+                              or pair_audio_pts >= MIN_AUDIO_ONLY_SCORE)
+                    if passes:
+                        all_passing.append((pair_combined, pair_sim, fin_path, rem_file,
+                                            pair_audio_pts, pair_video_pts))
+
+                    # Track best attempt per finished for diagnostics
+                    prev = top_per_fin.get(fin_path)
+                    if prev is None or (pair_combined, pair_sim) > (prev[0], prev[1]):
+                        top_per_fin[fin_path] = (pair_combined, pair_sim, rem_file,
+                                                 pair_audio_pts, pair_video_pts, passes)
+
+            # Greedy bipartite assignment — highest score first, each fin/rem used once
+            all_passing.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            assigned_fin: set[Path] = set()
+            assigned_rem: set[Path] = set()
+            for combined, sim, fin_path, rem_file, audio_pts, video_pts in all_passing:
+                if fin_path in assigned_fin or rem_file in assigned_rem:
+                    continue
+                matches.append((fin_path, rem_file, combined, audio_pts, video_pts, sim))
+                assigned_fin.add(fin_path)
+                assigned_rem.add(rem_file)
+
+            # Report unmatched finished files with their best attempt
+            for fin_path in finished_files:
+                if fin_path in assigned_fin:
+                    continue
+                top = top_per_fin.get(fin_path)
+                if top is None:
+                    continue
+                combined, sim, rem_file, audio_pts, video_pts, _ = top
+                sim_str = f", sim {sim:.1%}" if audio_pts else ""
+                print(f"  {YELLOW}?{RESET} {fin_path.name} — best: {DIM}{rem_file.name}{RESET} "
+                      f"({combined}/{max_combined}: {audio_pts}a+{video_pts}v{sim_str})")
+
+            # Sort alphabetically by target filename for a readable review list
+            matches.sort(key=lambda m: m[0].stem.lower())
 
             if not matches:
                 print(f"\n{RED}No matches found.{RESET} Possible causes:")
@@ -425,7 +484,7 @@ def main():
                 print(f"{BOLD}  Proposed renames ({len(matches)} matches){RESET}")
                 print(f"{BOLD}{'─' * 60}{RESET}\n")
 
-                max_score = 2 * len(SAMPLE_FRACTIONS)
+                max_score = 2 * sum(SAMPLE_WEIGHTS)
                 renames = []
                 for fin_path, rem_path, combined_score, audio_pts, video_pts, avg_sim in matches:
                     new_name = fin_path.stem + rem_path.suffix
@@ -449,9 +508,9 @@ def main():
 
                 # Warn about unmatched
                 matched_remuxed = {m[1] for m in matches}
-                unmatched_count = sum(1 for f in remuxed_files if f not in matched_remuxed)
-                if unmatched_count:
-                    print(f"{DIM}{unmatched_count} remuxed files had no match.{RESET}\n")
+                unmatched_files = [f for f in remuxed_files if f not in matched_remuxed]
+                if unmatched_files:
+                    print(f"{DIM}{len(unmatched_files)} remuxed files had no match.{RESET}\n")
 
                 if renames:
                     # ── Confirm ──────────────────────────────────────────────────────────
@@ -475,6 +534,31 @@ def main():
 
                         renamed_word = "file" if len(temp_map) == 1 else "files"
                         print(f"\n{GREEN}{BOLD}Done. {len(temp_map)} {renamed_word} renamed.{RESET}\n")
+
+                        # ── Offer to delete unmatched files (intros, extras, bloat) ──
+                        if unmatched_files:
+                            print(f"{BOLD}{'─' * 60}{RESET}")
+                            print(f"{BOLD}  {len(unmatched_files)} unmatched files in remuxed folder{RESET}")
+                            print(f"{BOLD}{'─' * 60}{RESET}\n")
+                            for f in unmatched_files:
+                                dur = remuxed_durations.get(f)
+                                print(f"  {DIM}[{fmt_dur(dur):>7}]{RESET} {f.name}")
+                            file_word = "file" if len(unmatched_files) == 1 else "files"
+                            print(f"\n{RED}{BOLD}Delete these {len(unmatched_files)} {file_word}? [y/N]{RESET} ", end="")
+                            delete_confirm = input().strip().lower()
+                            if delete_confirm in ("y", "yes"):
+                                deleted = 0
+                                for f in unmatched_files:
+                                    try:
+                                        os.remove(f)
+                                        print(f"  {RED}✗{RESET} {f.name}")
+                                        deleted += 1
+                                    except OSError as e:
+                                        print(f"  {YELLOW}!{RESET} {f.name} — {e}")
+                                deleted_word = "file" if deleted == 1 else "files"
+                                print(f"\n{RED}{BOLD}Deleted {deleted} {deleted_word}.{RESET}\n")
+                            else:
+                                print(f"{YELLOW}Skipped deletion.{RESET}")
                     else:
                         print(f"{YELLOW}Aborted.{RESET}")
                 else:
