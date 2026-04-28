@@ -1,6 +1,7 @@
 import argparse
 import os
 import glob
+import re
 import sys
 import time
 from pymediainfo import MediaInfo
@@ -8,7 +9,6 @@ from fractions import Fraction
 import threading
 import subprocess
 import json
-import numpy as np
 import multiprocessing as mp
 from tqdm import tqdm
 import signal
@@ -20,13 +20,23 @@ signal.signal(signal.SIGINT, signal.SIG_DFL)
 ANALYZE_FRAMES = 120
 SEGMENT_POSITIONS = [0.1, 0.5, 0.9]
 
-# Frames whose inter-frame motion is below this (mean abs gray delta, 0–255 scale)
-# carry no usable interlace signal — their field/frame ratio is dominated by noise.
-MOTION_THRESHOLD = 1.5
+IDET_MULTI_RE = re.compile(
+    r"Multi frame detection:\s*TFF:\s*(\d+)\s*BFF:\s*(\d+)\s*"
+    r"Progressive:\s*(\d+)\s*Undetermined:\s*(\d+)"
+)
+IDET_REPEATED_RE = re.compile(
+    r"Repeated Fields:\s*Neither:\s*(\d+)\s*Top:\s*(\d+)\s*Bottom:\s*(\d+)"
+)
 
-# Pooled median field/frame ratio: ~0.5 for true 60i, ~1.0 for progressive.
-# Only double the framerate when the ratio sits firmly in the interlaced zone.
-INTERLACED_RATIO_MAX = 0.65
+# Need at least this share of frames classified TFF/BFF by idet's multi-frame
+# detector before we'll consider the stream genuinely interlaced.
+INTERLACED_SHARE_MIN = 0.50
+
+# True 60i has nearly zero repeated fields (each field is a distinct moment).
+# 30p stored as 60i, and 3:2-telecined 24p, both produce repeated fields well
+# above this. The split between the two cases is wide (~0.005 vs ~0.20 in
+# practice), so the threshold isn't sensitive.
+REPEATED_SHARE_MAX = 0.05
 
 cpu_total = os.cpu_count() or 4
 workers = max(1, int(cpu_total * 0.4))
@@ -54,73 +64,80 @@ def get_video_info_ffprobe(path):
     return w, h, dur
 
 
-def segment_ratios(path, w, h, start, frames=ANALYZE_FRAMES):
+def segment_idet(path, start, frames=ANALYZE_FRAMES):
     """
-    Read `frames` grayscale frames starting at `start` and return per-frame
-    (field/frame ratio, frame motion) pairs. The ratio compares
-    top@N vs bottom@N-1 (a 1/60s gap in true 60i, a full 1/30s gap in 30p
-    stored as 60i) against the full frame@N vs frame@N-1 motion. True 60i
-    drives the ratio toward 0.5; progressive content stored interlaced
-    drives it toward 1.0.
+    Run ffmpeg's idet filter on `frames` frames starting at `start`. Returns
+    (tff, bff, prog, undet, repeated_top, repeated_bottom) or None on failure.
     """
     cmd = [
         "ffmpeg",
         "-ss", str(start),
         "-i", path,
         "-an",
-        "-vf", "format=gray",
+        "-vf", "idet",
         "-frames:v", str(frames),
-        "-f", "rawvideo",
+        "-f", "null",
         "-"
     ]
 
-    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    size = w * h
+    result = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    stderr = result.stderr.decode("utf-8", errors="ignore")
 
-    prev_frame = None
-    prev_bottom = None
-    out = []
+    multi = None
+    rep = (0, 0)
 
-    for _ in range(frames):
-        raw = pipe.stdout.read(size)
-        if len(raw) < size:
-            break
+    for line in stderr.splitlines():
+        m = IDET_MULTI_RE.search(line)
+        if m:
+            multi = tuple(int(x) for x in m.groups())
+            continue
+        m = IDET_REPEATED_RE.search(line)
+        if m:
+            _neither, top, bottom = (int(x) for x in m.groups())
+            rep = (top, bottom)
 
-        f = np.frombuffer(raw, dtype=np.uint8).reshape((h, w))
-        bottom = f[1::2]
+    if multi is None:
+        return None
 
-        if prev_frame is not None and prev_bottom is not None:
-            top = f[0::2]
-            frame_diff = float(np.mean(np.abs(f.astype(np.int16) - prev_frame.astype(np.int16))))
-            field_diff = float(np.mean(np.abs(top.astype(np.int16) - prev_bottom.astype(np.int16))))
-            if frame_diff > 0:
-                out.append((field_diff / frame_diff, frame_diff))
-
-        prev_frame = f
-        prev_bottom = bottom
-
-    pipe.terminate()
-    return out
+    tff, bff, prog, undet = multi
+    rep_top, rep_bot = rep
+    return tff, bff, prog, undet, rep_top, rep_bot
 
 
 def detect_motion_type(path):
+    """
+    Decide whether an interlaced-flagged stream contains true 60-field motion
+    (warranting an FPS double) or merely progressive content stored interlaced
+    (TFF/BFF flags but each field pair is a single timestamp). Discriminator
+    is idet's "Repeated Fields" count: near zero for true 60i, materially
+    above zero for 30p-in-60i and for 3:2-telecined 24p.
+    """
     try:
-        w, h, dur = get_video_info_ffprobe(path)
+        _w, _h, dur = get_video_info_ffprobe(path)
     except Exception:
         return "analysis_failed"
 
-    pooled = []
+    tff = bff = prog = undet = rep_top = rep_bot = 0
+
     for pos in SEGMENT_POSITIONS:
-        for ratio, motion in segment_ratios(path, w, h, dur * pos):
-            if motion >= MOTION_THRESHOLD:
-                pooled.append(ratio)
+        res = segment_idet(path, dur * pos)
+        if res is None:
+            continue
+        a, b, c, d, e, f = res
+        tff += a; bff += b; prog += c; undet += d
+        rep_top += e; rep_bot += f
 
-    # No moving frames → can't tell interlaced from progressive. The safe
-    # call (and the user's stated preference) is to leave the FPS alone.
-    if not pooled:
-        return "low_motion"
+    total = tff + bff + prog + undet
+    if total == 0:
+        return "analysis_failed"
 
-    if float(np.median(pooled)) < INTERLACED_RATIO_MAX:
+    interlaced_share = (tff + bff) / total
+    repeated_share = (rep_top + rep_bot) / total
+
+    if (interlaced_share >= INTERLACED_SHARE_MIN
+            and repeated_share <= REPEATED_SHARE_MAX):
         return "true_60i"
     return "progressive"
 
@@ -194,13 +211,18 @@ def process_video(video_file):
         else:
             deint_fps_value = fps_value
     effective_fps = deint_fps_value if deint_fps_value is not None else fps_value
-    fps_display_value = str(fps)
 
-    if fps_value is not None and field_order != 'Progressive' and deint_fps_value is not None:
-        if deint_fps_value != fps_value:
-            orig = f"{fps_value:.3f}".rstrip('0').rstrip('.')
-            deint = f"{deint_fps_value:.3f}".rstrip('0').rstrip('.')
-            fps_display_value = f"{orig}➔{deint}"
+    def _fmt(v):
+        return f"{v:.3f}".rstrip('0').rstrip('.')
+
+    if fps_value is None:
+        fps_display_value = str(fps)
+    elif (field_order != 'Progressive'
+            and deint_fps_value is not None
+            and deint_fps_value != fps_value):
+        fps_display_value = f"{_fmt(fps_value)}➔{_fmt(deint_fps_value)}"
+    else:
+        fps_display_value = _fmt(fps_value)
 
     # ---- Audio ----
     audio_tracks = [t for t in media_info.tracks if t.track_type == 'Audio']
