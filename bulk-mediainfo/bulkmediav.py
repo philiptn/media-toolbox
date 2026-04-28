@@ -20,9 +20,13 @@ signal.signal(signal.SIGINT, signal.SIG_DFL)
 ANALYZE_FRAMES = 120
 SEGMENT_POSITIONS = [0.1, 0.5, 0.9]
 
-LOW_MOTION = 1.2
-TRUE_INTERLACE_RATIO = 0.65
-PROGRESSIVE_RATIO = 0.9
+# Frames whose inter-frame motion is below this (mean abs gray delta, 0–255 scale)
+# carry no usable interlace signal — their field/frame ratio is dominated by noise.
+MOTION_THRESHOLD = 1.5
+
+# Pooled median field/frame ratio: ~0.5 for true 60i, ~1.0 for progressive.
+# Only double the framerate when the ratio sits firmly in the interlaced zone.
+INTERLACED_RATIO_MAX = 0.65
 
 cpu_total = os.cpu_count() or 4
 workers = max(1, int(cpu_total * 0.4))
@@ -32,7 +36,7 @@ def get_video_info_ffprobe(path):
     cmd = [
         "ffprobe", "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration",
+        "-show_entries", "stream=width,height,duration:format=duration",
         "-of", "json", path
     ]
     data = json.loads(subprocess.check_output(cmd))
@@ -42,19 +46,30 @@ def get_video_info_ffprobe(path):
     h = int(s["height"])
     dur = float(s.get("duration", 0) or 0)
     if dur <= 0:
+        # Stream duration is often N/A for MKV; fall back to container duration.
+        dur = float(data.get("format", {}).get("duration", 0) or 0)
+    if dur <= 0:
         dur = 60
 
     return w, h, dur
 
 
-def segment_ratio(path, w, h, start):
+def segment_ratios(path, w, h, start, frames=ANALYZE_FRAMES):
+    """
+    Read `frames` grayscale frames starting at `start` and return per-frame
+    (field/frame ratio, frame motion) pairs. The ratio compares
+    top@N vs bottom@N-1 (a 1/60s gap in true 60i, a full 1/30s gap in 30p
+    stored as 60i) against the full frame@N vs frame@N-1 motion. True 60i
+    drives the ratio toward 0.5; progressive content stored interlaced
+    drives it toward 1.0.
+    """
     cmd = [
         "ffmpeg",
         "-ss", str(start),
         "-i", path,
         "-an",
         "-vf", "format=gray",
-        "-frames:v", str(ANALYZE_FRAMES),
+        "-frames:v", str(frames),
         "-f", "rawvideo",
         "-"
     ]
@@ -64,82 +79,50 @@ def segment_ratio(path, w, h, start):
 
     prev_frame = None
     prev_bottom = None
-    ratios = []
-    motions = []
+    out = []
 
-    for _ in range(ANALYZE_FRAMES):
+    for _ in range(frames):
         raw = pipe.stdout.read(size)
         if len(raw) < size:
             break
 
         f = np.frombuffer(raw, dtype=np.uint8).reshape((h, w))
-        top = f[0::2]
         bottom = f[1::2]
 
         if prev_frame is not None and prev_bottom is not None:
-            frame_diff = np.mean(np.abs(f.astype(np.int16) - prev_frame.astype(np.int16)))
-            field_diff = np.mean(np.abs(top.astype(np.int16) - prev_bottom.astype(np.int16)))
-
+            top = f[0::2]
+            frame_diff = float(np.mean(np.abs(f.astype(np.int16) - prev_frame.astype(np.int16))))
+            field_diff = float(np.mean(np.abs(top.astype(np.int16) - prev_bottom.astype(np.int16))))
             if frame_diff > 0:
-                ratios.append(field_diff / frame_diff)
-                motions.append(frame_diff)
+                out.append((field_diff / frame_diff, frame_diff))
 
         prev_frame = f
         prev_bottom = bottom
 
     pipe.terminate()
-
-    if not ratios:
-        return None
-
-    return np.median(ratios), np.median(motions)
+    return out
 
 
 def detect_motion_type(path):
     try:
         w, h, dur = get_video_info_ffprobe(path)
-    except:
+    except Exception:
         return "analysis_failed"
 
-    results = []
-
+    pooled = []
     for pos in SEGMENT_POSITIONS:
-        start = dur * pos
-        res = segment_ratio(path, w, h, start)
-        if res is None:
-            continue
+        for ratio, motion in segment_ratios(path, w, h, dur * pos):
+            if motion >= MOTION_THRESHOLD:
+                pooled.append(ratio)
 
-        ratio, motion = res
-
-        if motion < LOW_MOTION:
-            results.append("low_motion")
-        elif ratio < TRUE_INTERLACE_RATIO:
-            results.append("true_interlaced")
-        elif ratio > PROGRESSIVE_RATIO:
-            results.append("progressive")
-        else:
-            results.append("high_motion")
-
-    if not results:
-        return "analysis_failed"
-
-    # Highest-motion decision logic
-    # If ANY segment shows high motion → treat as 50/60
-    if "high_motion" in results:
-        return "50/60_motion"
-
-    # Otherwise if any true interlaced motion
-    if "true_interlaced" in results:
-        return "true_interlaced"
-
-    # Otherwise progressive / low
-    if "progressive" in results:
-        return "progressive"
-
-    if "low_motion" in results:
+    # No moving frames → can't tell interlaced from progressive. The safe
+    # call (and the user's stated preference) is to leave the FPS alone.
+    if not pooled:
         return "low_motion"
 
-    return "analysis_failed"
+    if float(np.median(pooled)) < INTERLACED_RATIO_MAX:
+        return "true_60i"
+    return "progressive"
 
 
 def process_video(video_file):
@@ -195,7 +178,6 @@ def process_video(video_file):
 
     # ---- Motion / Deinterlace ----
     deint_fps_value = None
-    deint_fps_display = 'Unknown'
 
     try:
         fps_value = float(fps)
@@ -205,27 +187,20 @@ def process_video(video_file):
     if fps_value:
         if field_order != 'Progressive':
             motion_type = detect_motion_type(video_file)
-
-            if motion_type == "50/60_motion":
+            if motion_type == "true_60i":
                 deint_fps_value = fps_value * 2
-            elif motion_type in ("true_interlaced", "low_motion", "progressive"):
-                deint_fps_value = fps_value
-            if motion_type == "50/60_motion":
-                deint_fps_value = fps_value * 2
-            elif motion_type in ("true_interlaced", "low_motion", "progressive"):
+            else:
                 deint_fps_value = fps_value
         else:
             deint_fps_value = fps_value
     effective_fps = deint_fps_value if deint_fps_value is not None else fps_value
     fps_display_value = str(fps)
 
-    if fps_value is not None and field_order != 'Progressive':
-        orig = f"{fps_value:.3f}".rstrip('0').rstrip('.')
-        if deint_fps_value is not None:
+    if fps_value is not None and field_order != 'Progressive' and deint_fps_value is not None:
+        if deint_fps_value != fps_value:
+            orig = f"{fps_value:.3f}".rstrip('0').rstrip('.')
             deint = f"{deint_fps_value:.3f}".rstrip('0').rstrip('.')
             fps_display_value = f"{orig}➔{deint}"
-        elif deint_fps_display == "Mixed":
-            fps_display_value = f"{orig}➔Mixed"
 
     # ---- Audio ----
     audio_tracks = [t for t in media_info.tracks if t.track_type == 'Audio']
