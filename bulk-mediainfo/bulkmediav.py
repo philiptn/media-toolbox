@@ -29,7 +29,7 @@ IDET_REPEATED_RE = re.compile(
 )
 
 # Need at least this share of frames classified TFF/BFF by idet's multi-frame
-# detector before we'll consider the stream genuinely interlaced.
+# detector before we'll consider a segment genuinely interlaced.
 INTERLACED_SHARE_MIN = 0.50
 
 # True 60i has nearly zero repeated fields (each field is a distinct moment).
@@ -37,6 +37,10 @@ INTERLACED_SHARE_MIN = 0.50
 # above this. The split between the two cases is wide (~0.005 vs ~0.20 in
 # practice), so the threshold isn't sensitive.
 REPEATED_SHARE_MAX = 0.05
+
+# A segment must have at least this many idet-classified frames before its
+# verdict is trusted (avoids false positives on tiny samples).
+SEGMENT_MIN_FRAMES = 80
 
 cpu_total = os.cpu_count() or 4
 workers = max(1, int(cpu_total * 0.4))
@@ -113,31 +117,39 @@ def detect_motion_type(path):
     (TFF/BFF flags but each field pair is a single timestamp). Discriminator
     is idet's "Repeated Fields" count: near zero for true 60i, materially
     above zero for 30p-in-60i and for 3:2-telecined 24p.
+
+    Evaluated per-segment, with a strict-majority rule: more than half of the
+    usable segments must look like 60i. A single 60i-looking segment isn't
+    enough — low-motion scenes can mimic the 60i signature because idet's
+    field-identity check needs pixel-exact matches it doesn't always find.
     """
     try:
         _w, _h, dur = get_video_info_ffprobe(path)
     except Exception:
         return "analysis_failed"
 
-    tff = bff = prog = undet = rep_top = rep_bot = 0
+    evaluated = 0
+    sixty_i = 0
 
     for pos in SEGMENT_POSITIONS:
         res = segment_idet(path, dur * pos)
         if res is None:
             continue
-        a, b, c, d, e, f = res
-        tff += a; bff += b; prog += c; undet += d
-        rep_top += e; rep_bot += f
+        tff, bff, prog, undet, rep_top, rep_bot = res
+        total = tff + bff + prog + undet
+        if total < SEGMENT_MIN_FRAMES:
+            continue
+        evaluated += 1
 
-    total = tff + bff + prog + undet
-    if total == 0:
+        interlaced_share = (tff + bff) / total
+        repeated_share = (rep_top + rep_bot) / total
+        if (interlaced_share >= INTERLACED_SHARE_MIN
+                and repeated_share <= REPEATED_SHARE_MAX):
+            sixty_i += 1
+
+    if evaluated == 0:
         return "analysis_failed"
-
-    interlaced_share = (tff + bff) / total
-    repeated_share = (rep_top + rep_bot) / total
-
-    if (interlaced_share >= INTERLACED_SHARE_MIN
-            and repeated_share <= REPEATED_SHARE_MAX):
+    if sixty_i * 2 > evaluated:
         return "true_60i"
     return "progressive"
 
