@@ -5,6 +5,7 @@ Matches remuxed media files to finished files by comparing audio and visual
 fingerprints, then renames the remuxed files to match the finished ones.
 """
 
+import json
 import math
 import os
 import struct
@@ -77,8 +78,41 @@ def clean_path(raw: str) -> str:
 
 
 def get_duration(filepath: str) -> float | None:
-    """Get media duration in seconds via ffprobe."""
+    """Duration in seconds from video+audio streams only.
+
+    MKV containers report format duration as the longest stream of any kind,
+    so a subtitle track with incorrect/extended timing inflates the reported
+    file length. We compute from a/v streams to discard subtitles entirely.
+    """
     try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet",
+             "-show_entries", "stream=codec_type,duration:stream_tags=DURATION",
+             "-of", "json", filepath],
+            capture_output=True, text=True, timeout=30
+        )
+        streams = json.loads(result.stdout).get("streams", [])
+        durations: list[float] = []
+        for s in streams:
+            if s.get("codec_type") not in ("video", "audio"):
+                continue
+            d = s.get("duration")
+            if d and d != "N/A":
+                try:
+                    durations.append(float(d))
+                    continue
+                except ValueError:
+                    pass
+            tag = (s.get("tags") or {}).get("DURATION")
+            if tag:
+                try:
+                    h, m, sec = tag.split(":")
+                    durations.append(int(h) * 3600 + int(m) * 60 + float(sec))
+                except (ValueError, IndexError):
+                    pass
+        if durations:
+            return max(durations)
+        # Last-resort fallback: original format-duration query
         result = subprocess.run(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
