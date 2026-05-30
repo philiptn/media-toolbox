@@ -10,11 +10,10 @@ from the source into the encoded file using mkvmerge.
 Filename matching is case-insensitive and treats any run of non-alphanumeric
 characters as a single space, so "The.Movie_2024.mkv" matches "The Movie 2024.mkv".
 
-Run with no arguments and drag-and-drop the two folders into the prompts.
-
 Requires: mkvtoolnix (mkvmerge).
 """
 
+import argparse
 import json
 import os
 import re
@@ -40,25 +39,6 @@ def check_dependencies():
         print(f"{RED}Error: 'mkvmerge' not found. Install mkvtoolnix:{RESET}")
         print("  sudo dnf install mkvtoolnix")
         sys.exit(1)
-
-
-def clean_path(raw: str) -> str:
-    """Handle drag-and-drop paths: strip whitespace, quotes, escaped spaces."""
-    p = raw.strip()
-    if (p.startswith('"') and p.endswith('"')) or (p.startswith("'") and p.endswith("'")):
-        p = p[1:-1]
-    p = p.replace("\\ ", " ")
-    return p
-
-
-def prompt_dir(label: str) -> Path:
-    while True:
-        print(f"\n{CYAN}{label}{RESET}")
-        raw = input("  > ")
-        path = Path(clean_path(raw))
-        if path.is_dir():
-            return path
-        print(f"  {RED}Not a valid directory: {path}{RESET}")
 
 
 def normalize_key(name: str) -> str:
@@ -141,17 +121,37 @@ def merge_audio(encoded: Path, source: Path) -> bool:
     return True
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Insert audio tracks from source files into matching no-audio encoded files.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "encoded_dir",
+        type=Path,
+        help="Folder of encoded MKV files that are missing audio.",
+    )
+    parser.add_argument(
+        "source_dir",
+        type=Path,
+        help="Folder of source files with audio (searched recursively).",
+    )
+    args = parser.parse_args()
+    for label, path in (("encoded_dir", args.encoded_dir), ("source_dir", args.source_dir)):
+        if not path.is_dir():
+            parser.error(f"{label}: not a valid directory: {path}")
+    return args
+
+
 def main():
     check_dependencies()
+    args = parse_args()
+    encoded_dir = args.encoded_dir
+    source_dir = args.source_dir
 
     print(f"\n{BOLD}{'═' * 60}{RESET}")
     print(f"{BOLD}  Insert audio into no-audio encoded files{RESET}")
-    print(f"{BOLD}{'═' * 60}{RESET}")
-    print(f"{DIM}  Drag & drop folders into the terminal when prompted{RESET}")
-
-    encoded_dir = prompt_dir("Encoded files folder (the no-audio ones):")
-    source_dir = prompt_dir("Source files folder (the ones with audio, searched recursively):")
-    print()
+    print(f"{BOLD}{'═' * 60}{RESET}\n")
 
     print(f"{CYAN}Indexing source files...{RESET} {DIM}{source_dir}{RESET}")
     sources = index_sources(source_dir)

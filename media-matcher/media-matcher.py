@@ -27,6 +27,10 @@ SAMPLE_WEIGHTS = [1, 2, 3, 2, 1]
 AUDIO_CLIP_SECS = 3
 # Number of RMS energy windows per clip — forms the fingerprint vector.
 AUDIO_WINDOWS = 80
+# Frequency bands (Hz) for per-band RMS fingerprinting at 4 kHz mono.
+# Nyquist is 2000 Hz, so the top band is capped just under.
+# Per-band envelopes let cosine similarity reflect frequency content, not just loudness.
+AUDIO_BANDS = [(100, 500), (500, 1500), (1500, 1900)]
 # How many audio streams to try per remuxed file.
 # Remuxes often carry DTS/TrueHD as stream 0 while the finished file uses a different track.
 MAX_AUDIO_STREAMS = 4
@@ -123,11 +127,52 @@ def get_duration(filepath: str) -> float | None:
         return None
 
 
+def biquad_bandpass(samples, sample_rate: int,
+                    low_hz: float, high_hz: float) -> list[float]:
+    """Apply an RBJ-cookbook biquad band-pass (constant skirt gain) in Direct Form I.
+
+    Output is the filtered sample sequence, same length as input.
+    """
+    f0 = math.sqrt(low_hz * high_hz)           # geometric center frequency
+    bw_octaves = math.log2(high_hz / low_hz)   # bandwidth in octaves
+    omega = 2 * math.pi * f0 / sample_rate
+    sin_w = math.sin(omega)
+    cos_w = math.cos(omega)
+    # alpha for bandwidth-in-octaves form of the RBJ BPF
+    alpha = sin_w * math.sinh(math.log(2) / 2 * bw_octaves * omega / sin_w)
+
+    b0 =  sin_w / 2
+    b1 =  0.0
+    b2 = -sin_w / 2
+    a0 =  1 + alpha
+    a1 = -2 * cos_w
+    a2 =  1 - alpha
+
+    b0, b1, b2 = b0 / a0, b1 / a0, b2 / a0
+    a1, a2 = a1 / a0, a2 / a0
+
+    out = [0.0] * len(samples)
+    x1 = x2 = y1 = y2 = 0.0
+    for i, x in enumerate(samples):
+        y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        out[i] = y
+        x2, x1 = x1, x
+        y2, y1 = y1, y
+    return out
+
+
 def extract_audio_clip(filepath: str, timestamp: float,
                        stream_idx: int | None = None) -> tuple[list[float] | None, str]:
     """
     Extract AUDIO_CLIP_SECS of audio at `timestamp`, downsample to mono 4 kHz,
     and return (fingerprint, ffmpeg_stderr). fingerprint is None on failure.
+
+    The fingerprint is per-band RMS envelopes concatenated: for each band in
+    AUDIO_BANDS we IIR-filter the clip, compute AUDIO_WINDOWS RMS values, and
+    normalize the whole vector by a single global peak. Globally normalizing
+    preserves the *relative* energy between bands — without this, two clips
+    with identical loudness contours but different spectral content would
+    still match (each band's envelope normalizes to the same shape).
 
     Uses fast container seek + a 2-second pre-roll so the audio decoder (e.g. AC-3)
     has time to sync before we start capturing — avoids all-zero output on long seeks.
@@ -139,6 +184,7 @@ def extract_audio_clip(filepath: str, timestamp: float,
         skip = timestamp - seek_to   # actual gap to discard after fast seek
 
         audio_args = ["-map", f"0:a:{stream_idx}"] if stream_idx is not None else ["-vn"]
+        sample_rate = 4000
 
         cmd = ["ffmpeg", "-y",
                "-ss", str(seek_to), "-i", filepath,   # fast container seek
@@ -146,7 +192,7 @@ def extract_audio_clip(filepath: str, timestamp: float,
                "-t", str(AUDIO_CLIP_SECS),
                *audio_args,
                "-ac", "1",     # mono
-               "-ar", "4000",  # 4 kHz — sufficient for fingerprinting
+               "-ar", str(sample_rate),  # 4 kHz — sufficient for fingerprinting
                "-f", "s16le",  # raw signed 16-bit LE PCM → stdout
                "-"]
         result = subprocess.run(cmd, capture_output=True, timeout=30)
@@ -158,14 +204,23 @@ def extract_audio_clip(filepath: str, timestamp: float,
             return None, f"only {n} samples (need {AUDIO_WINDOWS})\n$ {cmd_str}\n{stderr}"
         samples = struct.unpack(f"<{n}h", data[:n * 2])
         ws = n // AUDIO_WINDOWS
-        envelope = [
-            math.sqrt(sum(s * s for s in samples[i * ws:(i + 1) * ws]) / ws)
-            for i in range(AUDIO_WINDOWS)
-        ]
-        peak = max(envelope)
-        if peak < 1:
-            return None, f"audio is silence (peak={peak:.1f})\n$ {cmd_str}\n{stderr}"
-        return [v / peak for v in envelope], ""
+
+        # Silence guard on the raw signal — cheap and catches all-zero decoder output
+        raw_peak = max(abs(s) for s in samples)
+        if raw_peak < 1:
+            return None, f"audio is silence (peak={raw_peak})\n$ {cmd_str}\n{stderr}"
+
+        fingerprint: list[float] = []
+        for low_hz, high_hz in AUDIO_BANDS:
+            filtered = biquad_bandpass(samples, sample_rate, low_hz, high_hz)
+            fingerprint.extend(
+                math.sqrt(sum(v * v for v in filtered[i * ws:(i + 1) * ws]) / ws)
+                for i in range(AUDIO_WINDOWS)
+            )
+        peak = max(fingerprint)
+        if peak < 1e-9:
+            return None, f"audio is silence after filtering\n$ {cmd_str}\n{stderr}"
+        return [v / peak for v in fingerprint], ""
     except Exception as e:
         return None, str(e)
 
@@ -426,6 +481,13 @@ def main():
 
                     rem_audio_streams, rem_vhashes = rem_cache[rem_file]
 
+                    # Video evidence is only meaningful when both files actually produced
+                    # frame hashes. If both did, a zero video score is positive evidence
+                    # that the visual content differs — audio coincidence shouldn't override it.
+                    fin_video_ok = any(h is not None for h in fin_vhashes)
+                    rem_video_ok = any(h is not None for h in rem_vhashes)
+                    both_have_video = fin_video_ok and rem_video_ok
+
                     audio_stream_list = rem_audio_streams if rem_audio_streams else [[None] * len(SAMPLE_FRACTIONS)]
                     # Per (fin, rem) pair, pick the best-scoring audio stream
                     pair_combined = -1
@@ -469,8 +531,15 @@ def main():
                     if pair_combined < 0:
                         continue
 
-                    passes = (pair_combined >= MIN_COMBINED_SCORE
-                              or pair_audio_pts >= MIN_AUDIO_ONLY_SCORE)
+                    if both_have_video and pair_video_pts == 0:
+                        # Video was extracted on both sides but nothing matched →
+                        # treat as a non-match no matter how strong audio coincidence is.
+                        passes = False
+                    else:
+                        passes = (
+                            pair_combined >= MIN_COMBINED_SCORE
+                            or (not both_have_video and pair_audio_pts >= MIN_AUDIO_ONLY_SCORE)
+                        )
                     if passes:
                         all_passing.append((pair_combined, pair_sim, fin_path, rem_file,
                                             pair_audio_pts, pair_video_pts))
