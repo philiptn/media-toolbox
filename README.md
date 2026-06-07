@@ -12,3 +12,6 @@ Two small utilities that display useful information in MKV files.
 
 ### [dvd-to-episodes](https://github.com/philiptn/media-toolbox/blob/main/dvd-to-episodes/README.md)
 A tool that automatically splits and stitches chapters of DVD video files into episodes.
+
+### handycam-to-mkv
+A program for automatically extracting MPEG-2 streams from unfinished DVD-R discs used in Sony Handycams. Operates the disc drive and saves the titles as MKV.

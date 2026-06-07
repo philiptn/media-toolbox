@@ -1,0 +1,23 @@
+# handycam-to-mkv.py uses only the Python standard library.
+#
+# What you DO need are these system packages and a Linux kernel with the
+# standard CDROM ioctls (i.e. any normal desktop Linux):
+#
+#   Fedora / RHEL:
+#     sudo dnf install ddrescue ffmpeg
+#       (ffmpeg comes from RPM Fusion; ffmpeg-free from the main repo also works)
+#       (eject is optional — only used as a fallback; ships with util-linux)
+#
+#   Debian / Ubuntu:
+#     sudo apt install gddrescue ffmpeg
+#       (the binary is still called `ddrescue`)
+#
+#   Arch:
+#     sudo pacman -S ddrescue ffmpeg
+#
+# Runtime requirements:
+#   - Python 3.6+
+#   - Read access to the optical device (e.g. /dev/sr0):
+#       run as root, or add yourself to the 'cdrom'/'disk' group:
+#         sudo usermod -aG cdrom $USER   # then log out/in
+#   - Linux only (relies on /dev/sr0 and the CDROM ioctls).
