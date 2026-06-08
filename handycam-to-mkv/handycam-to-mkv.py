@@ -17,12 +17,14 @@ plus ddrescue and ffmpeg on PATH. Linux only (uses the CDROM ioctls).
 """
 
 import argparse
+import datetime
 import fcntl
 import mmap
 import os
 import re
 import select
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -178,7 +180,18 @@ def wait_for_disc_or_quit(device):
 
 
 # ---- the actual work -------------------------------------------------------
-def ask_title():
+def ask_title(default=None):
+    # If we detected a recording date, offer it as the default: Enter accepts it,
+    # 'c' switches to typing a custom title.
+    if default:
+        prompt = _c("1", f"Title for this disc [{default}]") + _c(
+            "2", "  (Enter to accept, 'c' for custom): ")
+        choice = input(prompt).strip()
+        if choice.lower() != "c":
+            safe = sanitize_filename(choice) if choice else sanitize_filename(default)
+            if safe:
+                return safe
+            warn("That title has no usable characters — enter one manually.")
     while True:
         raw = input(_c("1", "Title for this disc: ")).strip()
         if not raw:
@@ -198,6 +211,135 @@ def sanitize_filename(name):
     name = re.sub(r'[\x00-\x1f<>:"|?*]', "", name)
     name = name.strip(" .")
     return name[:200]
+
+
+# ---- disc detection (type + recording date) --------------------------------
+# Unfinalized Sony mini-DVDs are DVD-VR: per-recording timestamps live in
+# VR_MANGR.IFO (magic DVD_RTR_VMG0), which we parse directly (the `dvd-vr`
+# tool's format) rather than scan blindly. Finalized discs are plain DVD-Video
+# (VIDEO_TS.IFO magic DVDVIDEO-VMG) and get imaged to a faithful .iso instead.
+_VR_IFO_MAGIC = b"DVD_RTR_VMG0"
+_DVDVIDEO_MAGIC = b"DVDVIDEO-VMG"
+
+
+def _decode_pgtm(b):
+    """Decode a 5-byte bit-packed DVD-VR timestamp into a datetime, or None."""
+    year = ((b[0] << 8) | b[1]) >> 2
+    month = ((b[1] & 0x03) << 2) | (b[2] >> 6)
+    day = (b[2] & 0x3E) >> 1
+    hour = ((b[2] & 0x01) << 4) | (b[3] >> 4)
+    minute = ((b[3] & 0x0F) << 2) | (b[4] >> 6)
+    sec = b[4] & 0x3F
+    if not year or not (1995 <= year <= datetime.date.today().year + 1):
+        return None
+    try:
+        return datetime.datetime(year, month, day, hour, minute, sec)
+    except ValueError:
+        return None
+
+
+def _parse_vr_ifo(buf):
+    """Given bytes containing VR_MANGR.IFO, return sorted list of recording
+    datetimes (may be empty)."""
+    base = buf.find(_VR_IFO_MAGIC)
+    if base < 0:
+        return []
+    ifo = buf[base:]
+
+    def be32(o):
+        return struct.unpack_from(">I", ifo, o)[0]
+
+    def be16(o):
+        return struct.unpack_from(">H", ifo, o)[0]
+
+    try:
+        pgit_sa = be32(256)                     # byte offset to program-info table
+        nr_vob_formats = ifo[pgit_sa + 3]
+        # vob_format_t is a PACKED 60-byte struct (no padding — the crucial detail)
+        pgi_gi = pgit_sa + 8 + nr_vob_formats * 60
+        nr_programs = be16(pgi_gi)
+        sa_arr = pgi_gi + 2                      # array of u32 offsets (from pgiti)
+        stamps = []
+        for i in range(nr_programs):
+            vvob = pgit_sa + be32(sa_arr + 4 * i)   # vvob_t; pgtm at +2 (5 bytes)
+            dt = _decode_pgtm(ifo[vvob + 2:vvob + 7])
+            if dt:
+                stamps.append(dt)
+        return sorted(stamps)
+    except (struct.error, IndexError):
+        return []
+
+
+def _read_device(device, cap=48 * 1024 * 1024):
+    """Sequentially read up to `cap` bytes from `device`, stopping early once we
+    can identify the disc: the DVD-Video magic ends the probe immediately, while
+    the DVD-VR IFO magic reads 64 KB further to capture its program table.
+    Sequential only — seeking is unreliable on optical drives. Returns bytes."""
+    chunks, total, vr_at = [], 0, -1
+    try:
+        fd = os.open(device, os.O_RDONLY)
+    except OSError:
+        return b""
+    try:
+        while total < cap:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if vr_at < 0:
+                buf = b"".join(chunks)
+                if _DVDVIDEO_MAGIC in buf:
+                    break
+                vr_at = buf.find(_VR_IFO_MAGIC)
+            elif total - vr_at >= 65536:
+                break
+    finally:
+        os.close(fd)
+    return b"".join(chunks)
+
+
+def _udf_label_stamp(device):
+    """Read the Sony UDF volume label and return it as a title. Sony writes a
+    full timestamp there (e.g. '2009_03_14_12H54M_AM'); use it verbatim when it
+    matches, else the bare date, else None. The label is already filename-safe."""
+    if not shutil.which("udfinfo"):
+        return None
+    try:
+        out = subprocess.run(["udfinfo", device], capture_output=True,
+                             text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"^label=(\d{4}_\d{2}_\d{2}_\d{2}H\d{2}M_(?:AM|PM))",
+                  out, re.MULTILINE)
+    if m:
+        return m.group(1)
+    m = re.search(r"^label=(\d{4}_\d{2}_\d{2})", out, re.MULTILINE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def detect_disc(device):
+    """Identify the disc and a suggested title. Returns (kind, title) where
+    kind is 'dvd-vr', 'dvd-video', or 'unknown', and title may be None.
+    DVD-VR recording dates come from the IFO program table; DVD-Video uses the
+    volume-label timestamp."""
+    buf = _read_device(device)
+    stamps = _parse_vr_ifo(buf)
+    if stamps:
+        oldest, newest = stamps[0].date(), stamps[-1].date()
+        if oldest == newest:
+            title = oldest.strftime("%Y_%m_%d")
+        else:
+            title = f"{oldest.strftime('%Y_%m_%d')}-{newest.strftime('%Y_%m_%d')}"
+        return "dvd-vr", title
+    if _DVDVIDEO_MAGIC in buf:
+        return "dvd-video", _udf_label_stamp(device)
+    return "unknown", _udf_label_stamp(device)
 
 
 # ---- live single-line progress (ddrescue / ffmpeg) -------------------------
@@ -342,8 +484,51 @@ def remux_to_mkv(mpg_path, mkv_path):
     return rc == 0
 
 
+_KIND_LABELS = {
+    "dvd-vr": "DVD-VR recording",
+    "dvd-video": "finalized DVD-Video",
+    "unknown": "unrecognized disc",
+}
+
+
 def process_disc(device, exports_dir):
-    title = ask_title()
+    kind, suggested = detect_disc(device)
+    info(f"Detected: {_KIND_LABELS[kind]}"
+         + (f" ({suggested})" if suggested else ""))
+    title = ask_title(suggested)
+    os.makedirs(exports_dir, exist_ok=True)
+    if kind == "dvd-video":
+        archive_iso(device, exports_dir, title)
+    else:
+        archive_mkv(device, exports_dir, title)
+
+
+def archive_iso(device, exports_dir, title):
+    """Finalized DVD-Video: the ddrescue image is already a valid ISO, so write
+    it straight into the output dir (avoids a multi-GB temp copy)."""
+    out_iso = os.path.join(exports_dir, title + ".iso")
+    if os.path.exists(out_iso):
+        warn(f"{out_iso} already exists — it will be overwritten.")
+    tmpdir = tempfile.mkdtemp(prefix="dvdrip_")
+    mapfile = os.path.join(tmpdir, "disc.mapfile")
+    try:
+        print()
+        info("Imaging DVD to ISO (ddrescue)")
+        if not ddrescue_disc(device, out_iso, mapfile):
+            err("ddrescue failed. Skipping this disc.")
+            if os.path.exists(out_iso):
+                os.remove(out_iso)
+            return
+        size_mb = os.path.getsize(out_iso) / (1024 * 1024)
+        print()
+        good(f"Done: {os.path.basename(out_iso)}  ({size_mb:.1f} MB)")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def archive_mkv(device, exports_dir, title):
+    """Unfinalized DVD-VR (or unrecognized): rescue the disc, carve the MPEG-2
+    program stream, and remux to MKV (no transcode)."""
     out_mkv = os.path.join(exports_dir, title + ".mkv")
     if os.path.exists(out_mkv):
         warn(f"{out_mkv} already exists — it will be overwritten.")
@@ -366,7 +551,6 @@ def process_disc(device, exports_dir):
 
         print()
         info("Step 3/3 — remuxing to MKV")
-        os.makedirs(exports_dir, exist_ok=True)
         if not remux_to_mkv(mpg, out_mkv):
             err("ffmpeg remux failed. Skipping this disc.")
             return
@@ -406,13 +590,20 @@ def main():
     info(f"Titles:  {exports_dir}")
 
     try:
+        first = True
         while True:
-            ensure_tray_open(args.device)
-            if wait_for_disc_or_quit(args.device) == "quit":
-                print()
-                info("Exiting.")
-                break
-            good("Disc detected.")
+            # On the first run, use a disc that's already in the drive instead
+            # of ejecting it; afterwards, eject and wait for the next one.
+            if first and drive_status(args.device) == CDS_DISC_OK:
+                good("Disc already inserted.")
+            else:
+                ensure_tray_open(args.device)
+                if wait_for_disc_or_quit(args.device) == "quit":
+                    print()
+                    info("Exiting.")
+                    break
+                good("Disc detected.")
+            first = False
             process_disc(args.device, exports_dir)
             print()
             info("Ejecting...")
