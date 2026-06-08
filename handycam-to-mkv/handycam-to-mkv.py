@@ -19,6 +19,7 @@ plus ddrescue and ffmpeg on PATH. Linux only (uses the CDROM ioctls).
 import argparse
 import datetime
 import fcntl
+import glob
 import mmap
 import os
 import re
@@ -141,6 +142,19 @@ def ensure_tray_open(device):
     info("Opening tray...")
     if not open_tray(device):
         warn("Couldn't open the tray automatically — open it manually if needed.")
+
+
+def read_key():
+    """Read a single keypress without waiting for Enter. Falls back to a line
+    read when stdin isn't a tty (e.g. piped input)."""
+    if not sys.stdin.isatty():
+        return (sys.stdin.readline().strip()[:1] or "")
+    old = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
 
 
 # ---- waiting for a disc (with 'q' to quit) ---------------------------------
@@ -498,7 +512,17 @@ def process_disc(device, exports_dir):
     title = ask_title(suggested)
     os.makedirs(exports_dir, exist_ok=True)
     if kind == "dvd-video":
-        archive_iso(device, exports_dir, title)
+        # A finalized DVD can be kept whole (ISO) or split into per-chapter MKVs.
+        # Single keypress — no Enter required.
+        sys.stdout.write(_c("1", "Output?") + _c(
+            "2", "  [i] ISO   [c] split chapters (default i): "))
+        sys.stdout.flush()
+        choice = read_key().lower()
+        print(choice if choice.isalnum() else "")
+        if choice == "c":
+            archive_chapters(device, exports_dir, title)
+        else:
+            archive_iso(device, exports_dir, title)
     else:
         archive_mkv(device, exports_dir, title)
 
@@ -522,6 +546,108 @@ def archive_iso(device, exports_dir, title):
         size_mb = os.path.getsize(out_iso) / (1024 * 1024)
         print()
         good(f"Done: {os.path.basename(out_iso)}  ({size_mb:.1f} MB)")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _chapter_dates(image, n_chapters):
+    """Best-effort per-chapter recording date. Finalized DVD-Video usually has
+    NO embedded date (verified: the IFO loses it and the stream carries no
+    user_data), so this returns [None]*n there and the caller falls back to
+    index names. Only when the title VOB actually contains many MPEG user_data
+    blocks do we attempt to decode dates from them — conservatively, accepting
+    only sane datetimes. UNVERIFIED against a date-bearing disc by design.
+    """
+    none = [None] * n_chapters
+    dates = []
+    blocks = 0
+    tail = b""
+    try:
+        with open(image, "rb") as f:
+            # bounded streaming scan — user_data is rare/absent on these discs
+            scanned = 0
+            while scanned < 2 * 1024 * 1024 * 1024:        # cap at 2 GB
+                chunk = f.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                scanned += len(chunk)
+                buf = tail + chunk
+                i = 0
+                while True:
+                    j = buf.find(b"\x00\x00\x01\xb2", i)   # user_data_start_code
+                    if j < 0 or j + 16 > len(buf):
+                        break
+                    blocks += 1
+                    dt = _decode_pgtm(buf[j + 4:j + 9])    # try DVD-VR pgtm form
+                    if dt:
+                        dates.append(dt)
+                    i = j + 4
+                tail = buf[-3:]
+    except OSError:
+        return none
+    # Negligible user_data ⇒ no per-chapter date available ⇒ index names.
+    if blocks < n_chapters or len(dates) < n_chapters:
+        return none
+    uniq = sorted(set(dates))
+    if len(uniq) < n_chapters:
+        return none
+    return [d.strftime("%Y_%m_%d_%HH%MM") for d in uniq[:n_chapters]]
+
+
+def archive_chapters(device, exports_dir, folder_title):
+    """Finalized DVD-Video, alternative mode: split each chapter into its own
+    MKV inside a folder named after the disc. Rescue to a temp image, remux the
+    main title (chapters preserved) and split it with mkvmerge."""
+    if not shutil.which("mkvmerge"):
+        err("mkvmerge not found on PATH — install mkvtoolnix. Skipping.")
+        return
+    out_dir = os.path.join(exports_dir, folder_title)
+    if os.path.isdir(out_dir) and os.listdir(out_dir):
+        warn(f"{out_dir}/ already exists and is not empty — files may be overwritten.")
+    os.makedirs(out_dir, exist_ok=True)
+
+    tmpdir = tempfile.mkdtemp(prefix="dvdrip_", dir=exports_dir)
+    iso = os.path.join(tmpdir, "disc.iso")
+    mapfile = os.path.join(tmpdir, "disc.mapfile")
+    title_mkv = os.path.join(tmpdir, "title.mkv")
+    part_base = os.path.join(tmpdir, "part.mkv")
+    try:
+        print()
+        info("Step 1/3 — reading disc with ddrescue")
+        if not ddrescue_disc(device, iso, mapfile):
+            err("ddrescue failed. Skipping this disc.")
+            return
+
+        print()
+        info("Step 2/3 — extracting title (ffmpeg)")
+        rc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "dvdvideo", "-title", "0", "-i", iso,
+             "-map", "0:v", "-map", "0:a", "-c", "copy", title_mkv],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        if rc != 0 or not os.path.exists(title_mkv):
+            err("ffmpeg title extraction failed. Skipping this disc.")
+            return
+
+        print()
+        info("Step 3/3 — splitting into chapters (mkvmerge)")
+        rc = subprocess.run(
+            ["mkvmerge", "-q", "-o", part_base, "--split", "chapters:all", title_mkv],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        parts = sorted(glob.glob(os.path.join(tmpdir, "part-*.mkv")))
+        if rc not in (0, 1) or not parts:           # mkvmerge rc 1 = warnings
+            err("mkvmerge split failed. Skipping this disc.")
+            return
+
+        names = _chapter_dates(iso, len(parts))
+        width = max(2, len(str(len(parts))))
+        for idx, part in enumerate(parts):
+            label = names[idx] if idx < len(names) and names[idx] else None
+            name = label or f"{idx + 1:0{width}d}"
+            shutil.move(part, os.path.join(out_dir, name + ".mkv"))
+
+        print()
+        good(f"Done: {folder_title}/  ({len(parts)} chapters)")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -564,7 +690,7 @@ def archive_mkv(device, exports_dir, title):
 
 # ---- main loop -------------------------------------------------------------
 def preflight(device):
-    missing = [t for t in ("ddrescue", "ffmpeg") if not shutil.which(t)]
+    missing = [t for t in ("ddrescue", "ffmpeg", "mkvmerge") if not shutil.which(t)]
     if missing:
         warn("Missing tools on PATH: " + ", ".join(missing) + " (see requirements.txt)")
     if not os.path.exists(device):
