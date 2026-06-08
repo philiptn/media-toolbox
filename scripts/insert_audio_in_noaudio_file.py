@@ -10,6 +10,11 @@ from the source into the encoded file using mkvmerge.
 Filename matching is case-insensitive and treats any run of non-alphanumeric
 characters as a single space, so "The.Movie_2024.mkv" matches "The Movie 2024.mkv".
 
+When several source files share a filename (e.g. "01.mkv" under different
+folders), the collision is resolved by comparing parent-folder names, walking
+up from the deepest folder until a single source remains. If it still can't be
+resolved (a genuine tie), the encoded file is reported as ambiguous and skipped.
+
 Requires: mkvtoolnix (mkvmerge).
 """
 
@@ -41,10 +46,20 @@ def check_dependencies():
         sys.exit(1)
 
 
-def normalize_key(name: str) -> str:
+def _normalize_text(text: str) -> str:
     """Lowercase, collapse non-alphanumeric runs to single spaces, strip."""
-    stem = Path(name).stem
-    return re.sub(r"[^a-z0-9]+", " ", stem.lower()).strip()
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def normalize_key(name: str) -> str:
+    """Normalized matching key from a filename (extension stripped)."""
+    return _normalize_text(Path(name).stem)
+
+
+def parent_components(path: Path, root: Path) -> list[str]:
+    """Normalized parent-folder names of path relative to root, deepest first."""
+    rel_parent = path.relative_to(root).parent
+    return [_normalize_text(p) for p in reversed(rel_parent.parts)]
 
 
 def find_media_files(root: Path) -> list[Path]:
@@ -54,26 +69,64 @@ def find_media_files(root: Path) -> list[Path]:
     )
 
 
-def index_sources(source_dir: Path) -> dict[str, Path]:
-    """Build {normalized_key: Path}. Collisions are reported and dropped."""
-    files = find_media_files(source_dir)
-    index: dict[str, Path] = {}
-    collisions: dict[str, list[Path]] = {}
-    for f in files:
+def index_sources(source_dir: Path) -> dict[str, list[Path]]:
+    """Build {normalized_key: [Path, ...]}, grouping filename collisions.
+
+    Collisions are kept and resolved per encoded file by parent folder.
+    """
+    index: dict[str, list[Path]] = {}
+    for f in find_media_files(source_dir):
         key = normalize_key(f.name)
         if not key:
             continue
-        if key in collisions:
-            collisions[key].append(f)
-        elif key in index:
-            collisions[key] = [index.pop(key), f]
-        else:
-            index[key] = f
-    for key, paths in collisions.items():
-        print(f"{YELLOW}Collision on key '{key}' — skipping:{RESET}")
-        for p in paths:
-            print(f"  {DIM}{p}{RESET}")
+        index.setdefault(key, []).append(f)
     return index
+
+
+# Sentinel returned by resolve_source when a filename collision can't be
+# narrowed to a single source by parent-folder comparison.
+class Ambiguous:
+    def __init__(self, candidates: list[Path]):
+        self.candidates = candidates
+
+
+def resolve_source(
+    encoded: Path,
+    candidates: list[Path],
+    encoded_dir: Path,
+    source_dir: Path,
+) -> Path | None | Ambiguous:
+    """Pick the source for an encoded file from same-named candidates.
+
+    Returns the matched Path, None if no candidate's folder matches, or an
+    Ambiguous holding the survivors if a genuine tie can't be broken.
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    enc_dirs = parent_components(encoded, encoded_dir)
+    cand_dirs = {c: parent_components(c, source_dir) for c in candidates}
+
+    remaining = list(candidates)
+    depth = 0
+    while len(remaining) > 1:
+        if depth >= len(enc_dirs):
+            # Encoded file has no deeper folder to disambiguate on.
+            return Ambiguous(remaining)
+        target = enc_dirs[depth]
+        filtered = [
+            c for c in remaining
+            if depth < len(cand_dirs[c]) and cand_dirs[c][depth] == target
+        ]
+        if not filtered:
+            # No same-named source sits in a matching folder.
+            return None
+        remaining = filtered
+        depth += 1
+
+    return remaining[0]
 
 
 def count_audio_tracks(path: Path) -> int | None:
@@ -155,7 +208,8 @@ def main():
 
     print(f"{CYAN}Indexing source files...{RESET} {DIM}{source_dir}{RESET}")
     sources = index_sources(source_dir)
-    print(f"  {DIM}{len(sources)} unique source key(s){RESET}\n")
+    total_srcs = sum(len(v) for v in sources.values())
+    print(f"  {DIM}{total_srcs} source file(s), {len(sources)} unique key(s){RESET}\n")
 
     encoded_files = [
         p for p in find_media_files(encoded_dir) if p.suffix.lower() == ".mkv"
@@ -169,16 +223,24 @@ def main():
     merged = 0
     skipped_no_audio = 0
     not_found = 0
+    ambiguous = 0
     failed = 0
 
     for enc in encoded_files:
         rel = enc.relative_to(encoded_dir)
         key = normalize_key(enc.name)
-        src = sources.get(key)
+        src = resolve_source(enc, sources.get(key, []), encoded_dir, source_dir)
 
         if src is None:
             print(f"  {YELLOW}[NO MATCH]{RESET} {rel}")
             not_found += 1
+            continue
+
+        if isinstance(src, Ambiguous):
+            print(f"  {YELLOW}[AMBIGUOUS]{RESET} {rel}  {DIM}← can't disambiguate by folder:{RESET}")
+            for c in src.candidates:
+                print(f"      {DIM}{c}{RESET}")
+            ambiguous += 1
             continue
 
         n_audio = count_audio_tracks(src)
@@ -201,10 +263,11 @@ def main():
     print(f"{BOLD}Summary:{RESET}")
     print(f"  {GREEN}merged:{RESET}        {merged}")
     print(f"  {YELLOW}no match:{RESET}      {not_found}")
+    print(f"  {YELLOW}ambiguous:{RESET}     {ambiguous}")
     print(f"  {YELLOW}no audio in src:{RESET} {skipped_no_audio}")
     print(f"  {RED}failed:{RESET}        {failed}")
 
-    if not_found or failed:
+    if not_found or ambiguous or failed:
         sys.exit(1)
 
 
